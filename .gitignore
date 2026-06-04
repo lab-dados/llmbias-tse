@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual env
+.venv
+
+# Secrets
+.env
+
+# Perfil persistente do Chrome (cookies/sessões pessoais) e dados coletados
+tmp/
+data/
+
+# Proposta interna de parceria — NÃO publicar (repo público)
+docs/*.docx
