@@ -72,7 +72,7 @@ def load_profile_ids(run_dir: Path):
     return None  # ainda não sorteado
 
 
-def run_once(run_id, platform, eixos, n_profiles, n_turns):
+def run_once(run_id, platform, eixos, n_profiles, n_turns, run_dir):
     cmd = [
         sys.executable, "-m", "llmbias_tse", "conjoint",
         "--run-id", run_id, "--phase", "generate",
@@ -80,7 +80,23 @@ def run_once(run_id, platform, eixos, n_profiles, n_turns):
         "--n-profiles", str(n_profiles), "--n-turns", str(n_turns),
     ]
     try:
-        return subprocess.run(cmd).returncode
+        # Captura a saída para diagnóstico (streamando também para o terminal via
+        # tee manual seria mais complexo; aqui priorizamos poder inspecionar o
+        # erro depois). O tail vai para data/<run>/last_error_<plataforma>.txt.
+        r = subprocess.run(cmd, capture_output=True, text=True,
+                           encoding="utf-8", errors="replace")
+        out = (r.stdout or "") + (r.stderr or "")
+        # sempre mostra o tail no terminal também
+        tail = "\n".join(out.strip().splitlines()[-12:])
+        if tail:
+            print(tail, flush=True)
+        if r.returncode != 0:
+            try:
+                (run_dir / f"last_error_{platform}.txt").write_text(
+                    out[-8000:], encoding="utf-8")
+            except Exception:
+                pass
+        return r.returncode
     except KeyboardInterrupt:
         raise
     except Exception as e:  # noqa: BLE001
@@ -129,7 +145,7 @@ def main() -> int:
                 log(run_dir, f"[{platform}] {done}/{total} feitas — rodando "
                              f"(tentativa, stalls={stalls})...")
                 rc = run_once(args.run_id, platform, args.eixos,
-                              args.n_profiles, args.n_turns)
+                              args.n_profiles, args.n_turns, run_dir)
                 # progresso?
                 pids2 = load_profile_ids(run_dir)
                 done2 = (platform_counts(run_dir, platform, pids2, args.eixos,
