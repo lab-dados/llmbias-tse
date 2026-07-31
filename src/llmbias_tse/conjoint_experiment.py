@@ -221,9 +221,16 @@ def generate_conversations(store: RunStore, profiles, platforms, eixos,
 
     with sync_playwright() as pw:
         b, ctx = browser.connect(pw)
-        # SEMPRE um tab próprio (nunca ctx.pages[0]): assim vários processos em
-        # paralelo — um por plataforma — não brigam pelo mesmo tab. É fechado ao
-        # final. Cada processo dirige seu próprio tab no mesmo Chrome (CDP).
+        # Fecha abas remanescentes (de execuções anteriores que caíram/foram
+        # mortas antes de fechar a própria aba). Sem isso, os alvos se acumulam
+        # e TRAVAM o CDP (connect_over_cdp passa a estourar o timeout). É seguro
+        # porque a coleta roda SERIAL (um processo por vez).
+        for _pg in list(ctx.pages):
+            try:
+                _pg.close()
+            except Exception:
+                pass
+        # Tab próprio, fechado ao final (guarda para não vazar em caso de erro).
         page = ctx.new_page()
         page.set_default_timeout(60000)
         try:
