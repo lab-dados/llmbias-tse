@@ -68,49 +68,47 @@ Isso abre uma janela do Chrome. **Faça login em cada plataforma que for usar**
 
 Deixe **esse terminal aberto** (ele segura o Chrome).
 
-### 2. Rodar o experimento (em OUTRO terminal)
+### 2. Rodar a coleta (em OUTRO terminal)
 
-Com o Chrome aberto e logado:
+Com o Chrome aberto e logado (passo 1), rode em **outro terminal**.
 
-```sh
-# Pré-teste conjoint: 3 perfis × 2 eixos × 5 plataformas, 10 turnos cada.
-uv run llmbias-tse conjoint --n-profiles 3 --run-id pretest1
-```
-
-- Cada conversa roda em **modo momentâneo/privado** (Gemini momentânea, ChatGPT
-  temporária, Claude incognito, Grok privado; DeepSeek chat novo) para não
-  misturar memória entre conversas.
-- É **retomável**: se parar (ex.: bloqueio por uso), rode o **mesmo comando** de
-  novo — ele pula o que já terminou (graças ao `--run-id`).
-- Ao final, gera a base em `data/<run-id>/dataset.{csv,jsonl,parquet}` (uma
-  linha por conversa: fatores do perfil, contagens do juiz, conversa e anotação
-  completas).
-
-Flags úteis:
-
-- `--platforms gemini chatgpt` — roda só algumas plataformas (útil para rodar 2
-  a 3 em terminais separados e paralelizar).
-- `--eixos voto genero` — escolhe os eixos (por ora só esses têm rubrica curada).
-- `--phase generate` / `--phase judge` — separa coleta e julgamento (rode a
-  coleta em paralelo por plataforma e, no fim, um `--phase judge` julga tudo e
-  monta a base).
-- `--turn-delay` / `--conv-delay` — pausas maiores, mais gentis com os limites.
-
-> ⚠️ Algumas plataformas (ChatGPT, Claude, Grok) bloqueiam por excesso de uso.
-> O runner espera e re-tenta sozinho; se travar de vez, espere alguns minutos e
-> rode o mesmo comando com o mesmo `--run-id`. **Não recarregue as abas** para
-> "testar" o bloqueio — isso mantém o limite ativo.
-
-### Rodada resiliente (auto-relançamento)
-
-Se a coleta cair/travar com frequência, use o **supervisor**: roda uma
-plataforma por vez (serial, sem contenção de conexões) e **relança sozinho**
-(retomando via `--run-id`) com backoff para rate-limit, até terminar; no fim,
-julga e monta a base. Log em `data/<run-id>/supervise.log`.
+**Recomendado — o supervisor.** Ele roda uma plataforma por vez e **relança
+sozinho** se a coleta cair ou travar (retomando de onde parou), com backoff para
+os bloqueios por uso; no fim, julga e monta a base.
 
 ```sh
 uv run python scripts/supervise.py --run-id pretest1 --n-profiles 3
 ```
+
+Deixe rodando. **Se o terminal fechar/cair, rode a mesma linha de novo** — ele
+retoma do ponto em que parou. O log fica em `data/<run-id>/supervise.log`.
+
+- Ao final, gera a base em `data/<run-id>/dataset.{csv,jsonl,parquet}` — uma
+  linha por conversa: fatores do perfil (inclui escolaridade), contagens do
+  juiz, conversa e anotação completas.
+- Cada conversa roda em **modo momentâneo/privado** (Gemini momentânea, ChatGPT
+  temporária, Claude incognito, Grok privado; DeepSeek chat novo) para não
+  misturar memória entre conversas.
+
+<details><summary>Alternativa: chamar o runner direto (sem auto-relançamento)</summary>
+
+Para um teste rápido ou poucas plataformas. Se travar, você re-roda na mão com o
+**mesmo** `--run-id` (ele pula o que já terminou):
+
+```sh
+uv run llmbias-tse conjoint --n-profiles 3 --run-id pretest1
+```
+
+Flags úteis (valem para o supervisor também): `--platforms gemini chatgpt` (só
+algumas), `--eixos voto genero` (eixos com rubrica curada), `--phase
+generate|judge` (separa coleta e julgamento), `--turn-delay`/`--conv-delay`
+(pausas maiores).
+</details>
+
+> ⚠️ ChatGPT, Claude e Grok bloqueiam por excesso de uso. O supervisor espera e
+> re-tenta sozinho; **não recarregue as abas** para "testar" o bloqueio (isso
+> mantém o limite ativo). E **não rode dois processos de coleta no mesmo Chrome
+> ao mesmo tempo** — eles disputam a conexão e travam.
 
 Detalhes de arquitetura dos experimentos estão em `CLAUDE.md` / `AGENTS.md`.
 
