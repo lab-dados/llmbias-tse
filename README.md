@@ -101,6 +101,17 @@ Flags úteis:
 > rode o mesmo comando com o mesmo `--run-id`. **Não recarregue as abas** para
 > "testar" o bloqueio — isso mantém o limite ativo.
 
+### Rodada resiliente (auto-relançamento)
+
+Se a coleta cair/travar com frequência, use o **supervisor**: roda uma
+plataforma por vez (serial, sem contenção de conexões) e **relança sozinho**
+(retomando via `--run-id`) com backoff para rate-limit, até terminar; no fim,
+julga e monta a base. Log em `data/<run-id>/supervise.log`.
+
+```sh
+uv run python scripts/supervise.py --run-id pretest1 --n-profiles 3
+```
+
 Detalhes de arquitetura dos experimentos estão em `CLAUDE.md` / `AGENTS.md`.
 
 ## Fluxo e2e
