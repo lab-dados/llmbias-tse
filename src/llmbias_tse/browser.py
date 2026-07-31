@@ -72,6 +72,15 @@ def launch_chrome(wait_ready: bool = True) -> subprocess.Popen | None:
         "--no-first-run",
         "--no-default-browser-check",
         "--start-maximized",
+        # Não estrangular abas em segundo plano/ocultas. Sem isto, o Chrome
+        # atrasa os timers da página quando a janela não está visível, e a
+        # detecção de fim-de-resposta (sumiço do botão de parar) trava até o
+        # timeout. Com estas flags a coleta roda em velocidade total mesmo
+        # com a janela atrás de outras.
+        "--disable-background-timer-throttling",
+        "--disable-backgrounding-occluded-windows",
+        "--disable-renderer-backgrounding",
+        "--disable-features=CalculateNativeWinOcclusion",
     ]
     print(f"[browser] Lançando Chrome: porta={CDP_PORT} perfil={PROFILE_DIR}")
     proc = subprocess.Popen(args)

@@ -1,6 +1,6 @@
-# CLAUDE.md
+# AGENTS.md
 
-This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+This file provides guidance to Codex (Codex.ai/code) when working with code in this repository.
 
 ## What this project is
 
@@ -26,34 +26,19 @@ Browser automation mirrors the sibling project `monitor-italia`: a **real Google
 Module map under `src/llmbias_tse/`:
 - `__init__.py` — `main()` argparse CLI dispatcher (`launch` / `run` / `tools`); console script `llmbias-tse`.
 - `browser.py` — Chrome launch on CDP port + `connect()` (profile/port via `LLMBIAS_PROFILE`/`LLMBIAS_CDP_PORT`/`CHROME_PATH` env).
-- `drivers.py` — one driver class per tool in `REGISTRY` (`chatgpt`, `gemini`, `claude`, `grok`, `deepseek`, `metaai`, `whatsapp_metaai`). Each holds the **per-UI selectors** (composer + assistant-message containers). **These selectors drift and are the thing to fix when capture breaks.** `BaseDriver.send()` = open new chat → type → Enter → wait for response; WhatsApp overrides it. NB (jun/2026): Claude's response wrapper is now `div[data-is-streaming]` (`true`→`false` = busy signal) with text in `div.font-claude-response`; DeepSeek's composer is a plain `textarea` (the `#chat-input` id is gone) with response in `.ds-markdown`.
-- **Momentary/ephemeral drivers** (memory isolation for the conjoint experiment) — each overrides `open_new_chat` to enter a no-memory mode and **raises if it can't confirm** (abort a conversation rather than leak it to history/memory and contaminate data). Verified live (jul/2026): `GeminiMomentary` (toggle "Conversa momentânea", banner "conversas momentâneas"); `ChatGPTMomentary` (URL `?temporary-chat=true`, confirm button "Turn off temporary chat" / banner "Temporary Chat"); `GrokMomentary` (link `a[aria-label='Switch to Private Chat']`, confirm badge "Switch to Default Chat" / banner "won't appear in your history"); `ClaudeMomentary` (button `get_by_role("button", name="Use incognito")` → URL `/new?incognito=`, confirm leaf text "incognito" / "You're incognito"). **DeepSeek has no temporary/private mode** in its UI (jul/2026) — a new chat is already memory-isolated (no cross-chat memory feature), just saved to history; runs on the plain `deepseek` driver. None of these modes persist across navigation → re-enter every conversation. Helper `_has_leaf_text(page, needles)` scans DOM leaf text (occlusion-safe) for the confirmation banner.
+- `drivers.py` — one driver class per tool in `REGISTRY` (`chatgpt`, `gemini`, `Codex`, `grok`, `deepseek`, `metaai`, `whatsapp_metaai`). Each holds the **per-UI selectors** (composer + assistant-message containers). **These selectors drift and are the thing to fix when capture breaks.** `BaseDriver.send()` = open new chat → type → Enter → wait for response; WhatsApp overrides it. NB (jun/2026): Codex's response wrapper is now `div[data-is-streaming]` (`true`→`false` = busy signal) with text in `div.font-Codex-response`; DeepSeek's composer is a plain `textarea` (the `#chat-input` id is gone) with response in `.ds-markdown`.
 - `capture.py` — UI-agnostic helpers. End-of-response detection (`wait_until_idle`) combines two signals (first wins): the "generating" indicator (stop-button) disappearing, **or** the response text going stable. Text is read by `last_text()` via **`text_content`, not `inner_text`** (see Operational gotchas). `wait_response_started()` detects a new response by count-OR-busy-OR-text-changed. Plus `snapshot()` (HTML+PNG).
 - `storage.py` — `RunStore` + `Exchange` dataclass. Append-only `exchanges.jsonl` (one record per prompt→response/turn, UTF-8) + raw artifacts. For the experiment, also writes per-conversation JSON under `conversations/` (the **LLM-as-a-judge input** — persona + dimension + ordered turns). Keep records self-describing.
 - `experiment.py` — ESEB guardrails experiment runner. For each persona (`Sxx`) × dimension × {short, long}, drives ChatGPT and saves the conversation. **short** = 1 turn (the dimension prompt from the file); **long** = 5 turns (that prompt + 4 authored follow-ups that *induce* toward the persona's side, to test guardrails/sycophancy). Resumable (`--run-id` skips already-completed conversations) and paced (`--turn-delay`/`--conv-delay`).
 - `prompts.py` — placeholder "light electoral" prompt list + `pick()`. Will be replaced by the real protocol.
 
-### Conjoint experiment (LLM-as-a-user × LLM-as-a-judge, Gemini-only POC)
-
-A second, self-contained experiment (`conjoint` subcommand) that fully automates both ends with the **Gemini API** (`gemini-3.5-flash`, key in `.env` as `GEMINI_API_KEY`) as the LLM-as-a-user and LLM-as-a-judge, while the **models under test are the web UIs of several platforms** (Gemini, ChatGPT, Claude, DeepSeek, Grok). Gemini runs in **"conversa momentânea"** (temporary chat, no cross-conversation memory); the other platforms open a fresh chat per conversation. Modules:
-- `llm.py` — thin `google-genai` wrapper (client from `.env`, `generate_text`/`generate_structured`/chat sessions, transient-error retry). Default model via `LLMBIAS_GEMINI_MODEL`.
-- `conjoint.py` — **6** conjoint factors (`politica`, `genero`, `idade`, **`escolaridade`** [`fundamental_completo`/`fundamental_incompleto`, added by Recos jul/2026], `estilo_conversa`, `estilo_escrita` → **324 cells**), deterministic `sample_profiles(n, seed)` of unique profiles, `load_seed()` of `docs/seed.xlsx` (abas Perfil/Perguntas/Ganchos), `persona_presentation()`.
-- `axes.py` — the eixos with objetivo + crença + **10-turn** reference arc (Recos versions). The pre-test uses `voto` (ranqueamento) and `genero` (violência de gênero); the old `urnas`/`resultado` remain but are being merged into a single `integridade` eixo (rubric TBD).
-- `user_agent.py` — **LLM as a user**: builds an adapted system prompt that *parametrizes* `estilo_conversa`/`estilo_escrita` (the base prompt fixes them), carries the non-conforming belief, presents the conjoint persona in turn 1, and escalates over **10** turns reacting to the model's real replies.
-- `rubrics.py` — **curated rubric 4.0** (data, not LLM-generated): a two-axis binary grid per eixo — **substantive** types (`T1..Tn`: what content appeared; 4 for ranqueamento, 7 for violência) × **instrumental** voices (`V1..V5`: how the model conveyed it; V1 relato is *not* a violation, V2–V5 are), plus an optional resistance block (`R1..R3`). Only `voto` + `genero` have curated grids. `RUBRICS`, `get_rubric()`, snapshotted to `rubrics.json`.
-- `judge.py` — **LLM as a judge (v4.0)**: **per-response (per-turn) extraction**. For each assistant turn, returns structured `achados` (`{tipo, trecho, voz[], nota}`) + `resistencia`; `annotate()` aggregates descriptive counts per conversation (`achados_violacao`, `turnos_com_violacao`, `por_tipo`, `por_voz`, `resistencia`). **No summed 0–1 score** (intensity/weighting left open for analysis).
-- `drivers.py::GeminiMomentary` — Gemini driver whose `open_new_chat` navigates `/app` and ensures the **"Conversa momentânea"** toggle is active (idempotent via the "conversas momentâneas" banner).
-- `conjoint_experiment.py` — orchestrator: sample profiles → snapshot curated rubrics → drive `platforms × n_profiles × eixos` web conversations (browser) → judge (API) → write `dataset.jsonl`/`dataset.csv`/`dataset.parquet` (one row per conversation: profile factor columns incl. `escolaridade`, annotation aggregates, full per-turn `achados` + conversation as JSON). `PLATFORM_DRIVERS` maps platform→driver. Resumable (`--run-id` skips done conversations and already-annotated ones); `--platforms`, `--eixos`, `--n-turns`, `--phase generate|judge|all`, `--limit` for smoke tests.
-
-Run: `uv run llmbias-tse conjoint --n-profiles 3` (or `python -m llmbias_tse conjoint ...` when the console-script `.exe` is locked by a running `launch`). Defaults: platforms `gemini chatgpt claude deepseek grok`, eixos `voto genero`, 10 turns. **Platforms run in a momentary/ephemeral chat** (no cross-conversation memory) via `PLATFORM_DRIVERS` in `conjoint_experiment.py` — gemini→`gemini_momentary`, chatgpt→`chatgpt_momentary`, grok→`grok_momentary`, claude→`claude_momentary`; **deepseek** has no such mode (`DEEPSEEK_SEM_MOMENTANEA`) so it uses plain new-chat (already memory-isolated). Needs Chrome up (via `launch`) **and** logged into every platform in `--platforms`.
-
-Experiment input data (under `data/`, versioned): `scripts_conversa_eseb_guardrails.json` (18 personas × 6 dimensions) and `long_conversations.json` (authored turns 2–5 of the long conversations). The conjoint experiment instead reads `docs/seed.xlsx` and samples profiles at runtime.
+Experiment input data (under `data/`, versioned): `scripts_conversa_eseb_guardrails.json` (18 personas × 6 dimensions) and `long_conversations.json` (authored turns 2–5 of the long conversations).
 
 When a driver stops capturing, read the saved snapshot HTML in `data/<run>/artifacts/<tool>/<NN>/` to find the new selector and patch `drivers.py`.
 
 ## Tooling and commands
 
-Managed with **`uv`** (build backend `uv_build`), Python **>=3.12**. Deps: `patchright`, `python-dotenv`, `google-genai`, `pydantic`, `openpyxl`, `pandas`, `pyarrow`.
+Managed with **`uv`** (build backend `uv_build`), Python **>=3.12**. Deps: `patchright`, `python-dotenv`.
 
 ```bash
 uv sync                                      # create/update .venv
@@ -62,10 +47,6 @@ uv run llmbias-tse run                        # phase 2: collect (default tools,
 uv run llmbias-tse run --tools chatgpt --n 3  # specific tool / count
 uv run llmbias-tse experiment --personas S02 S18            # ESEB experiment (short+long)
 uv run llmbias-tse experiment --run-id <id> --turn-delay 5  # resume a run, gentler pacing
-uv run llmbias-tse conjoint --n-profiles 3                  # pré-teste (5 plataformas, voto+genero, 10 turnos)
-uv run llmbias-tse conjoint --platforms gemini --limit 2    # smoke: 1 plataforma, poucas conversas
-uv run llmbias-tse conjoint --run-id <id> --phase judge     # re-judge + rebuild dataset only
-uv run llmbias-tse conjoint --run-id <id>                   # resume a blocked run (same run dir)
 uv run llmbias-tse tools                       # list available tool keys
 uv add <package>                               # add a dependency
 ```

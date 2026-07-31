@@ -20,6 +20,89 @@ sessão logada via [Patchright](https://github.com/Kaliiiiiiiiii-Vinyzu/patchrig
 (Playwright stealth), manda prompts, captura as respostas e **salva tudo** em
 formato estruturado pronto para a etapa de avaliação de viés (LLM-as-a-judge).
 
+## Rodar os experimentos (passo a passo)
+
+Há dois experimentos prontos, ambos guiados por navegador com **contas
+pessoais**:
+
+- **`conjoint`** (o do pré-teste) — LLM-como-usuário × LLM-como-juiz: um agente
+  simula uma pessoa e conversa com a plataforma sob teste (Gemini, ChatGPT,
+  Claude, DeepSeek, Grok) em **conversa momentânea** (sem memória entre
+  conversas); um juiz anota cada conversa por uma rubrica.
+- **`experiment`** — experimento ESEB (conversas curtas vs. longas por persona).
+
+### 0. Pré-requisitos (uma vez)
+
+- [uv](https://docs.astral.sh/uv/) e Google Chrome instalados.
+- Uma chave da API do Gemini em `.env` (usada pelo agente-usuário e pelo juiz):
+
+  ```
+  GEMINI_API_KEY=sua-chave-aqui
+  ```
+
+- Instale as dependências:
+
+  ```sh
+  uv sync
+  ```
+
+### 1. Abrir o Chrome e **fazer login** (primeira vez)
+
+Na primeira vez você **não está logado** nos sites. Abra o Chrome controlado
+pelo harness e faça login **manualmente** — uma vez só. Os logins ficam salvos
+no perfil (`tmp/profile`) e **persistem** entre execuções; você só refaz login
+se sair da conta ou apagar `tmp/`.
+
+```sh
+uv run llmbias-tse launch
+```
+
+Isso abre uma janela do Chrome. **Faça login em cada plataforma que for usar**
+(deixe as abas logadas):
+
+- ChatGPT — https://chatgpt.com
+- Gemini — https://gemini.google.com
+- Claude — https://claude.ai
+- DeepSeek — https://chat.deepseek.com
+- Grok — https://grok.com
+
+Deixe **esse terminal aberto** (ele segura o Chrome).
+
+### 2. Rodar o experimento (em OUTRO terminal)
+
+Com o Chrome aberto e logado:
+
+```sh
+# Pré-teste conjoint: 3 perfis × 2 eixos × 5 plataformas, 10 turnos cada.
+uv run llmbias-tse conjoint --n-profiles 3 --run-id pretest1
+```
+
+- Cada conversa roda em **modo momentâneo/privado** (Gemini momentânea, ChatGPT
+  temporária, Claude incognito, Grok privado; DeepSeek chat novo) para não
+  misturar memória entre conversas.
+- É **retomável**: se parar (ex.: bloqueio por uso), rode o **mesmo comando** de
+  novo — ele pula o que já terminou (graças ao `--run-id`).
+- Ao final, gera a base em `data/<run-id>/dataset.{csv,jsonl,parquet}` (uma
+  linha por conversa: fatores do perfil, contagens do juiz, conversa e anotação
+  completas).
+
+Flags úteis:
+
+- `--platforms gemini chatgpt` — roda só algumas plataformas (útil para rodar 2
+  a 3 em terminais separados e paralelizar).
+- `--eixos voto genero` — escolhe os eixos (por ora só esses têm rubrica curada).
+- `--phase generate` / `--phase judge` — separa coleta e julgamento (rode a
+  coleta em paralelo por plataforma e, no fim, um `--phase judge` julga tudo e
+  monta a base).
+- `--turn-delay` / `--conv-delay` — pausas maiores, mais gentis com os limites.
+
+> ⚠️ Algumas plataformas (ChatGPT, Claude, Grok) bloqueiam por excesso de uso.
+> O runner espera e re-tenta sozinho; se travar de vez, espere alguns minutos e
+> rode o mesmo comando com o mesmo `--run-id`. **Não recarregue as abas** para
+> "testar" o bloqueio — isso mantém o limite ativo.
+
+Detalhes de arquitetura dos experimentos estão em `CLAUDE.md` / `AGENTS.md`.
+
 ## Fluxo e2e
 
 ```mermaid

@@ -1,8 +1,10 @@
 [project]
 name = "llmbias-tse"
 version = "0.1.0"
-description = "Add your description here"
+description = "Harness aberto de coleta e análise para auditoria automatizada de modelos de IA generativa no contexto eleitoral brasileiro (TSE 2026)."
 readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
 authors = [
     { name = "jtrecenti", email = "julio.trecenti@gmail.com" }
 ]

@@ -13,6 +13,69 @@ from __future__ import annotations
 import time
 from pathlib import Path
 
+# Frases que aparecem no modal de rate limit ("Too many requests"). Usamos
+# FRASES INTEIRAS e específicas (não palavras soltas como "rate limit"): o
+# bundle do ChatGPT tem templates/JSON ocultos com esses termos, então
+# procurar no text_content do body dava FALSO-POSITIVO (achava o modal mesmo
+# sem ele na tela). `get_by_text` casa só com texto de elementos renderizados,
+# não com <script>/template oculto — e o `.count()` funciona com janela
+# ocluída (é count do locator base, não `.last`).
+RATE_LIMIT_MARKERS = (
+    "Too many requests",
+    "making requests too quickly",
+    "temporarily limited access",
+)
+
+
+class RateLimited(Exception):
+    """A ferramenta bloqueou temporariamente por excesso de requisições."""
+
+
+class SendFailed(Exception):
+    """A mensagem não chegou a ser postada (envio não registrou). Costuma
+    indicar bloqueio transitório (ex.: toast "Algo deu errado" do Gemini, que
+    é cumulativo/rate-limit) — tratar com espera passiva + re-tentativa."""
+
+
+def page_has_text(page, markers) -> bool:
+    """True se algum dos textos (renderizados) está presente na página."""
+    if isinstance(markers, str):
+        markers = [markers]
+    for m in markers:
+        try:
+            if page.get_by_text(m, exact=False).count() > 0:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def is_rate_limited(page) -> bool:
+    """True se a página está REALMENTE exibindo o aviso de rate limit."""
+    for marker in RATE_LIMIT_MARKERS:
+        try:
+            if page.get_by_text(marker, exact=False).count() > 0:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def dismiss_rate_limit(page) -> None:
+    """Fecha o modal de rate limit, se houver botão ('Got it'/'OK')."""
+    for sel in (
+        "button:has-text('Got it')",
+        "button:has-text('OK')",
+        "button:has-text('Entendi')",
+    ):
+        try:
+            loc = page.locator(sel).first
+            if loc.count() > 0:
+                loc.click(timeout=2000)
+                return
+        except Exception:
+            continue
+
 
 def first_visible(page, selectors: list[str], timeout: float = 15.0):
     """Devolve o primeiro locator visível dentre `selectors` (tenta em ordem).
@@ -77,9 +140,75 @@ def wait_for_new_response(
     )
 
 
+def last_text(page, selectors) -> str:
+    """Texto do ÚLTIMO balão de resposta.
+
+    Usa **text_content**, NÃO inner_text. inner_text depende de layout e
+    volta VAZIO quando a janela do Chrome está ocluída (atrás do terminal),
+    porque o SO pula a renderização — foi o que travava a detecção de fim
+    (busy já sumia, mas o texto lido era ""). text_content é independente de
+    renderização e funciona com a janela ao fundo.
+
+    `selectors` pode ser str ou lista (tenta em ordem; o 1º não-vazio vence —
+    útil pra ler um nó de conteúdo limpo e cair no balão inteiro se faltar).
+    """
+    if isinstance(selectors, str):
+        selectors = [selectors]
+    for sel in selectors:
+        try:
+            base = page.locator(sel)
+            # NB: guardar pelo count do locator BASE, não do `.last`. Com a
+            # janela ocluída, `base.last.count()` chega a voltar 0 mesmo com
+            # o elemento presente (base.count()==1) — e aí a leitura era
+            # pulada. base.count() é confiável; base.last.text_content() lê.
+            if base.count() > 0:
+                txt = base.last.text_content() or ""
+                if txt.strip():
+                    return txt
+        except Exception:
+            continue
+    return ""
+
+
+def wait_response_started(
+    page,
+    response_selector: str,
+    baseline: int,
+    busy_selectors: list[str],
+    read,
+    prev_text: str,
+    timeout: float = 90.0,
+    poll: float = 0.4,
+) -> None:
+    """Espera a geração de uma NOVA resposta COMEÇAR, por múltiplos sinais
+    (o 1º que vier vale):
+
+      - contagem de balões > baseline (novo balão);
+      - indicador de 'gerando' visível (busy);
+      - texto do último balão ficou não-vazio E diferente de `prev_text`.
+
+    Um único sinal (a contagem) é frágil com a janela ocluída; combinar três
+    evita timeout falso quando a resposta claramente apareceu.
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if count_responses(page, response_selector) > baseline:
+            return
+        if busy_selectors and any_visible(page, busy_selectors):
+            return
+        t = last_text(page, read)
+        if t.strip() and t != prev_text:
+            return
+        time.sleep(poll)
+    raise TimeoutError(
+        f"Resposta não começou em {timeout}s (selector={response_selector!r})"
+    )
+
+
 def wait_stable_text(
     page,
     response_selector: str,
+    read_selector=None,
     stable_for: float = 2.5,
     timeout: float = 240.0,
     poll: float = 0.5,
@@ -89,28 +218,24 @@ def wait_stable_text(
     Considera pronto quando o texto não muda por `stable_for` segundos.
     Retorna o texto final. Levanta TimeoutError se nunca estabilizar.
     """
+    read = [read_selector, response_selector] if read_selector else [response_selector]
     deadline = time.time() + timeout
-    last_text = None
+    prev = None
     stable_since = None
     while time.time() < deadline:
-        try:
-            loc = page.locator(response_selector).last
-            text = loc.inner_text() if loc.count() > 0 else ""
-        except Exception:
-            text = last_text or ""
-
-        if text and text == last_text:
+        text = last_text(page, read)
+        if text and text == prev:
             if stable_since is None:
                 stable_since = time.time()
             elif time.time() - stable_since >= stable_for:
                 return text.strip()
         else:
             stable_since = None
-            last_text = text
+            prev = text
         time.sleep(poll)
 
-    if last_text:
-        return last_text.strip()  # devolve o que tiver, mesmo sem estabilizar
+    if prev:
+        return prev.strip()  # devolve o que tiver, mesmo sem estabilizar
     raise TimeoutError(
         f"Resposta não estabilizou em {timeout}s (selector={response_selector!r})"
     )
@@ -120,43 +245,67 @@ def wait_until_idle(
     page,
     response_selector: str,
     busy_selectors: list[str],
+    read_selector=None,
+    ignore_text: str = "",
     quiet_for: float = 1.8,
+    stable_for: float = 6.0,
     timeout: float = 240.0,
     poll: float = 0.4,
 ) -> str:
-    """Espera a geração terminar usando o indicador de 'gerando' (ex.: botão
-    de parar). Pronto quando NENHUM `busy_selector` está visível por
-    `quiet_for` segundos seguidos e já há texto de resposta.
+    """Espera a geração terminar, com DOIS sinais combinados (o 1º que vier
+    vence):
 
-    Mais robusto que estabilidade-por-texto: imune a chips de citação,
-    cursores e contadores que re-renderizam dentro do balão.
+    1. **indicador de 'gerando' sumiu** (`busy_selectors`, ex.: botão de
+       parar) por `quiet_for` segundos — rápido e imune a chips de citação;
+    2. **texto parou de crescer** por `stable_for` segundos — backstop caso
+       o sinal 'busy' fique preso (Chrome estrangula timers de aba ao fundo).
+
+    O texto é lido por `last_text` (text_content), que funciona mesmo com a
+    janela ocluída — onde inner_text voltaria vazio.
+
+    `ignore_text`: nunca retorna enquanto o texto lido for igual a este valor
+    (o último balão do turno ANTERIOR). Garante que multi-turno capture a
+    resposta NOVA, e não a antiga, caso o novo balão ainda não tenha surgido.
     """
+    read = [read_selector, response_selector] if read_selector else [response_selector]
     deadline = time.time() + timeout
     idle_since = None
+    prev = None
+    stable_since = None
     while time.time() < deadline:
         busy = any_visible(page, busy_selectors)
-        try:
-            loc = page.locator(response_selector).last
-            text = loc.inner_text() if loc.count() > 0 else ""
-        except Exception:
-            text = ""
-
-        if not busy and text.strip():
-            if idle_since is None:
-                idle_since = time.time()
-            elif time.time() - idle_since >= quiet_for:
-                return text.strip()
+        text = last_text(page, read)
+        text_s = text.strip()
+        if text_s and text == ignore_text:
+            text_s = ""  # ainda mostrando o balão do turno anterior
+        if text_s:
+            # Sinal 1: botão de parar sumiu.
+            if not busy:
+                if idle_since is None:
+                    idle_since = time.time()
+                elif time.time() - idle_since >= quiet_for:
+                    return text_s
+            else:
+                idle_since = None
+            # Sinal 2: texto estável (mesmo com 'busy' preso).
+            if text == prev:
+                if stable_since is None:
+                    stable_since = time.time()
+                elif time.time() - stable_since >= stable_for:
+                    return text_s
+            else:
+                stable_since = None
+                prev = text
         else:
             idle_since = None
+            stable_since = None
+            prev = text
         time.sleep(poll)
 
-    # Timeout: devolve o que tiver, se houver.
-    try:
-        text = page.locator(response_selector).last.inner_text()
-        if text.strip():
-            return text.strip()
-    except Exception:
-        pass
+    # Timeout: devolve o que tiver, se houver (e se não for o balão antigo).
+    text = last_text(page, read)
+    if text.strip() and text != ignore_text:
+        return text.strip()
     raise TimeoutError(
         f"Geração não terminou em {timeout}s "
         f"(response={response_selector!r} busy={busy_selectors})"

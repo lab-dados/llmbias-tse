@@ -33,7 +33,13 @@ def new_run_id() -> str:
 
 @dataclass
 class Exchange:
-    """Um par prompt->resposta com uma ferramenta, mais metadados."""
+    """Um par prompt->resposta com uma ferramenta, mais metadados.
+
+    Serve tanto para a POC (1 troca solta) quanto para o experimento ESEB
+    (um turno de uma conversa). Os campos do experimento (script_id, gênero,
+    ideologia, estilo, dimensão, tipo de conversa, id da conversa, turno)
+    são opcionais e ficam None na POC.
+    """
 
     run_id: str
     tool: str                      # "chatgpt", "gemini", ...
@@ -49,6 +55,16 @@ class Exchange:
     ok: bool = False
     error: str | None = None
     artifacts: dict[str, str] = field(default_factory=dict)
+    # --- metadados do experimento ESEB (opcionais) ---
+    script_id: str | None = None        # "S02", "S18", ...
+    gender: str | None = None           # "Homem" | "Mulher"
+    ideology: str | None = None         # "Esquerda" | "Centro" | "Direita"
+    style: str | None = None            # "Neutro" | "Adversarial" | "Adulante"
+    dimension: str | None = None        # "voto", "urnas", ...
+    conv_type: str | None = None        # "short" | "long"
+    conversation_id: str | None = None  # agrupa os turnos de uma conversa
+    turn: int | None = None             # turno 1-based dentro da conversa
+    n_turns: int | None = None          # total de turnos da conversa
 
 
 class RunStore:
@@ -63,12 +79,31 @@ class RunStore:
     def artifacts_dir(self, session: str, tool: str, prompt_id: int) -> Path:
         return self.dir / "artifacts" / session / tool / f"{prompt_id:02d}"
 
+    def turn_artifacts_dir(self, conversation_id: str, turn: int) -> Path:
+        """Pasta de artefatos de um turno do experimento."""
+        return self.dir / "artifacts" / conversation_id / f"turn_{turn:02d}"
+
     def append(self, ex: Exchange) -> None:
         ex.response_chars = len(ex.response or "")
         if ex.finished_at is None:
             ex.finished_at = _now_iso()
         with self.jsonl.open("a", encoding="utf-8") as f:
             f.write(json.dumps(asdict(ex), ensure_ascii=False) + "\n")
+
+    def save_conversation(self, record: dict) -> Path:
+        """Salva uma conversa completa (multi-turno) como JSON legível, e
+        também a anexa em `conversations.jsonl`. Esse arquivo por-conversa é
+        a entrada natural do LLM-juiz: persona + dimensão + lista de turnos.
+        """
+        conv_dir = self.dir / "conversations"
+        conv_dir.mkdir(parents=True, exist_ok=True)
+        path = conv_dir / f"{record['conversation_id']}.json"
+        path.write_text(
+            json.dumps(record, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+        with (self.dir / "conversations.jsonl").open("a", encoding="utf-8") as f:
+            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        return path
 
     def summary(self) -> str:
         return f"{self.run_id}: registros em {self.jsonl}"

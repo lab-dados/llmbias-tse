@@ -18,3 +18,6 @@ data/
 
 # Proposta interna de parceria — NÃO publicar (repo público)
 docs/*.docx
+
+# Artefatos de ferramentas locais (Playwright MCP, etc.)
+.playwright-mcp/
