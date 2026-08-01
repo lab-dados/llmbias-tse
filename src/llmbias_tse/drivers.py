@@ -431,6 +431,33 @@ class ClaudeMomentary(Claude):
     def _momentary_active(self, page) -> bool:
         return _has_leaf_text(page, self._incognito_needles)
 
+    def _dismiss_modal(self, page) -> None:
+        """Fecha nudges/modais do Claude (ex.: 'claude-code-nudge') cujo backdrop
+        sobrepõe o composer e intercepta o clique/digitação."""
+        try:
+            page.keyboard.press("Escape")
+            time.sleep(0.2)
+        except Exception:
+            pass
+        # Fallback: remove o backdrop fixo que intercepta os eventos de ponteiro.
+        try:
+            page.evaluate(
+                r"""() => {
+                  const kill = [];
+                  document.querySelectorAll('[role=presentation],[data-base-ui-backdrop],[data-open]').forEach(el => {
+                    const c = (el.className || '') + '';
+                    if (/backdrop|inset-0/.test(c) && getComputedStyle(el).position === 'fixed') kill.push(el);
+                  });
+                  kill.forEach(el => el.remove());
+                }"""
+            )
+        except Exception:
+            pass
+
+    def submit(self, page, prompt: str, max_limit_waits: int | None = None) -> str:
+        self._dismiss_modal(page)
+        return super().submit(page, prompt, max_limit_waits)
+
     def open_new_chat(self, page) -> None:
         page.goto(self.new_chat_url, wait_until="domcontentloaded",
                   timeout=60000)
