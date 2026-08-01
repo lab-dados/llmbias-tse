@@ -429,7 +429,18 @@ class ClaudeMomentary(Claude):
     _incognito_needles = ["incognito", "incógnito"]
 
     def _momentary_active(self, page) -> bool:
-        return _has_leaf_text(page, self._incognito_needles)
+        # Sinal INEQUÍVOCO: a URL vira .../new?incognito= ao ativar. Checar
+        # texto da página dava falso-positivo (o botão/tooltip "Use incognito"
+        # contém "incognito" mesmo no modo normal), fazendo o driver PULAR a
+        # ativação e rodar em modo normal (salvando no histórico).
+        try:
+            if "incognito=" in (page.url or "").lower():
+                return True
+        except Exception:
+            pass
+        # Reforço: só considera ativo se houver banner explícito de estado.
+        return _has_leaf_text(page, ["you're incognito", "incognito chat",
+                                     "conversa incógnita", "chat incógnito"])
 
     def _dismiss_modal(self, page) -> None:
         """Fecha nudges/modais do Claude (ex.: 'claude-code-nudge') cujo backdrop
@@ -466,6 +477,7 @@ class ClaudeMomentary(Claude):
         for _ in range(4):
             if self._momentary_active(page):
                 return
+            self._dismiss_modal(page)  # nudge/modal pode interceptar o clique
             try:
                 page.get_by_role("button", name="Use incognito").first.click(
                     timeout=5000)
@@ -477,7 +489,7 @@ class ClaudeMomentary(Claude):
                     return
                 time.sleep(0.3)
         raise RuntimeError(
-            "Claude: conversa incognito não confirmada "
+            "Claude: conversa incognito não confirmada (URL sem ?incognito=) "
             f"(último erro: {last_err!r}) — abortando para não salvar no "
             "histórico/memória"
         )
