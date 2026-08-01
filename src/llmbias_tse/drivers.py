@@ -68,6 +68,10 @@ class BaseDriver:
     # Quando somem, a geração terminou. Se vazio, cai no fallback de
     # estabilidade-por-texto (menos robusto).
     busy_selectors: list[str] = []
+    # Marcadores de texto de FASE INTERMEDIÁRIA (thinking/pesquisa) que NÃO são
+    # a resposta final. Enquanto o texto lido contiver algum deles, a detecção
+    # de fim NÃO retorna (evita capturar "Searching the web"/status e truncar).
+    pending_markers: list[str] = []
     # Tempo extra após carregar a página antes de digitar.
     settle_s: float = 1.5
     # Teto de espera pela resposta (ferramentas com busca na web são lentas).
@@ -230,6 +234,7 @@ class BaseDriver:
                 page, self.response_selector, self.busy_selectors,
                 read_selector=read, ignore_text=prev_text,
                 timeout=self.response_timeout,
+                pending_markers=self.pending_markers,
             )
         return capture.wait_stable_text(
             page, self.response_selector, read_selector=read,
@@ -435,6 +440,10 @@ class Claude(BaseDriver):
         "button[aria-label*='Stop']",
         "button[aria-label*='Parar']",
     ]
+    # Fase de thinking/pesquisa do Claude: enquanto o texto lido for isto, não é
+    # a resposta final (evita truncar em "Searching the web"). / são
+    # os ícones de status (Pondering/Searching) do Claude.
+    pending_markers = ["Searching the web", "", ""]
     settle_s = 2.0
 
 

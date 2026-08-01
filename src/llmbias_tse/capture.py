@@ -251,6 +251,7 @@ def wait_until_idle(
     stable_for: float = 6.0,
     timeout: float = 240.0,
     poll: float = 0.4,
+    pending_markers=(),
 ) -> str:
     """Espera a geração terminar, com DOIS sinais combinados (o 1º que vier
     vence):
@@ -278,6 +279,12 @@ def wait_until_idle(
         text_s = text.strip()
         if text_s and text == ignore_text:
             text_s = ""  # ainda mostrando o balão do turno anterior
+        if text_s and pending_markers and any(m in text for m in pending_markers):
+            # ainda em fase de thinking/pesquisa (ex.: Claude "Searching the
+            # web"): NÃO é a resposta final. Trata como não-pronto para não
+            # capturar o texto de status e truncar a resposta.
+            text_s = ""
+            idle_since = None
         if text_s:
             # Sinal 1: botão de parar sumiu.
             if not busy:
