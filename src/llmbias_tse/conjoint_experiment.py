@@ -55,6 +55,9 @@ PLATFORM_DRIVERS: dict[str, tuple[str, str]] = {
     "grok": ("grok_momentary", "privada"),
     "claude": ("claude_momentary", "incognito"),
     "deepseek": ("deepseek", "chat_novo"),
+    # Google AI Mode (udm=50): sem incognito; isolamento por navegação fresca
+    # a cada conversa (thread nova). Fora do default: `--platforms google_aimode`.
+    "google_aimode": ("google_aimode", "thread_nova"),
     # WhatsApp/Meta AI: NÃO tem chat novo; o isolamento é por `/reset-all-ais`
     # (feito no open_new_chat do driver). Requer WhatsApp Web logado (QR) e o
     # chat do Meta AI aberto à mão. Fora do default: rodar com
@@ -226,16 +229,25 @@ def generate_conversations(store: RunStore, profiles, platforms, eixos,
 
     with sync_playwright() as pw:
         b, ctx = browser.connect(pw)
-        # Cria a PRÓPRIA aba PRIMEIRO (o contexto nunca fica sem página), depois
-        # fecha as abas remanescentes (de execuções anteriores que caíram/foram
-        # mortas antes de fechar a própria aba). Ordem importa: fechar a última
-        # página do contexto CDP mata o contexto e faz o new_page falhar
-        # (TargetClosedError). Sem essa limpeza, os alvos se acumulam e TRAVAM o
-        # connect_over_cdp seguinte. Seguro porque a coleta roda SERIAL.
-        page = ctx.new_page()
+        # WhatsApp/Meta AI precisa da aba EXISTENTE (logada, com o Meta AI
+        # aberto): não dá para criar aba nova nem fechá-la (perderia a sessão/o
+        # chat ativo). Se whatsapp está nas plataformas e há uma aba dele, REUSA.
+        wa_page = next((p for p in ctx.pages
+                        if "web.whatsapp.com" in (p.url or "")), None)
+        if "whatsapp_metaai" in platforms and wa_page is not None:
+            page = wa_page
+        else:
+            # Cria a PRÓPRIA aba PRIMEIRO (o contexto nunca fica sem página);
+            # fechar a última página do contexto CDP o mata (TargetClosedError).
+            page = ctx.new_page()
+        # Fecha abas remanescentes (de execuções que caíram) para não acumular
+        # alvos e TRAVAR o connect_over_cdp seguinte — mas PRESERVA a aba do
+        # WhatsApp e a página de trabalho. Seguro porque a coleta roda SERIAL.
         for _pg in list(ctx.pages):
             if _pg is page:
                 continue
+            if "web.whatsapp.com" in (_pg.url or ""):
+                continue  # nunca fecha a sessão do WhatsApp
             try:
                 _pg.close()
             except Exception:
@@ -248,10 +260,12 @@ def generate_conversations(store: RunStore, profiles, platforms, eixos,
                 _run_one_conversation(page, store, drivers[pl], pl, modes[pl],
                                       p, e, seed_data, model, n_turns, turn_delay)
         finally:
-            try:
-                page.close()
-            except Exception:
-                pass
+            # Não fecha a aba do WhatsApp (preserva a sessão para retomadas).
+            if page is not wa_page:
+                try:
+                    page.close()
+                except Exception:
+                    pass
 
 
 # --------------------------------------------------------------------------

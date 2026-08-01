@@ -657,6 +657,46 @@ class DeepSeek(BaseDriver):
     response_timeout = 180.0
 
 
+class GoogleAIMode(BaseDriver):
+    """Google AI Mode (aba "Modo IA" da busca, `udm=50`).
+
+    Sem modo anônimo/incognito próprio: cada conversa navega para uma URL
+    AI Mode NOVA (`?udm=50` sem `q`), o que abre uma thread limpa (o contexto
+    só persiste DENTRO da conversa, via composer de follow-up). Isolamento
+    entre conversas = navegação fresca (análogo ao DeepSeek). Fica salvo na
+    Atividade da conta Google — não há como evitar na UI (jul/2026).
+
+    Seletores confirmados por inspeção (ago/2026), voláteis (classes ofuscadas
+    do Google): composer é a `textarea` visível (placeholder "Pergunte o que
+    quiser"); a prosa da resposta fica em `div.n6owBd` (um por turno). Se
+    quebrar, reinspecione com scratchpad/google_inspect*.py.
+    """
+
+    name = "google_aimode"
+    new_chat_url = "https://www.google.com/search?udm=50"
+    # A página tem 2-3 textareas: as OCULTAS (w=0,h=0) vêm ANTES no DOM, e
+    # first_visible só olha `.first` — por isso mira a VISÍVEL via `:visible`
+    # (o composer de follow-up "Pergunte o que quiser").
+    composer_selectors = [
+        "textarea[placeholder*='Pergunte']:visible",
+        "textarea:visible",
+    ]
+    # Prosa da resposta (um bloco por turno). Classe ofuscada → volátil.
+    response_selector = "div.n6owBd"
+    content_selector = "div.n6owBd"
+    busy_selectors: list[str] = []      # sem botão de "parar" estável
+    settle_s = 3.0
+    response_timeout = 240.0            # AI Mode faz busca na web, é lento
+    start_timeout = 120.0
+
+    def open_new_chat(self, page) -> None:
+        """Navega para uma thread AI Mode fresca e espera o composer."""
+        page.goto(self.new_chat_url, wait_until="domcontentloaded", timeout=60000)
+        time.sleep(self.settle_s)
+        # o composer visível pode estar abaixo da dobra → garante presença
+        capture.first_visible(page, self.composer_selectors, timeout=30)
+
+
 class MetaAI(BaseDriver):
     name = "metaai"
     new_chat_url = "https://www.meta.ai/"
@@ -889,8 +929,8 @@ class WhatsAppMetaAI(BaseDriver):
 REGISTRY: dict[str, type[BaseDriver]] = {
     d.name: d
     for d in (ChatGPT, ChatGPTMomentary, Gemini, GeminiMomentary, Claude,
-              ClaudeMomentary, Grok, GrokMomentary, DeepSeek, MetaAI,
-              WhatsAppMetaAI)
+              ClaudeMomentary, Grok, GrokMomentary, DeepSeek, GoogleAIMode,
+              MetaAI, WhatsAppMetaAI)
 }
 
 DEFAULT_TOOLS = ["chatgpt", "gemini", "claude", "metaai"]
