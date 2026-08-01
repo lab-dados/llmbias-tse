@@ -181,24 +181,45 @@ class BaseDriver:
             # (SendFailed) — muito melhor que esperar o start_timeout estourar:
             # o submit() então espera com backoff e re-tenta.
             if self.user_selector:
-                posted = (capture.count_responses(page, self.user_selector)
-                          > user_baseline)
+                def _registered() -> bool:
+                    # A mensagem POSTOU se: (a) subiu a contagem de balões do
+                    # usuário, OU (b) a geração começou (botão parar/busy visível
+                    # — ex.: ChatGPT "pensando" antes de escrever), OU (c) o texto
+                    # da resposta mudou. Vários sinais evitam o falso SendFailed
+                    # quando o modelo demora a renderizar o balão do usuário.
+                    try:
+                        if (capture.count_responses(page, self.user_selector)
+                                > user_baseline):
+                            return True
+                    except Exception:
+                        pass
+                    for bs in self.busy_selectors:
+                        try:
+                            if page.locator(bs).count() > 0:
+                                return True
+                        except Exception:
+                            pass
+                    try:
+                        t = capture.last_text(page, read_list)
+                        if t and t != prev_text:
+                            return True
+                    except Exception:
+                        pass
+                    return False
+
+                posted = _registered()
                 tries = 0
                 while not posted and tries < 3:
                     time.sleep(3.0)
-                    posted = (capture.count_responses(page, self.user_selector)
-                              > user_baseline)
+                    posted = _registered()
                     if posted:
                         break
                     self._perform_send(page, prompt)  # limpa e reenvia
                     tries += 1
-                if not posted and not (
-                    capture.count_responses(page, self.user_selector)
-                    > user_baseline
-                ):
+                if not posted:
                     raise capture.SendFailed(
                         "mensagem não postou após reenvios (possível bloqueio "
-                        "transitório do Gemini / rate limit)"
+                        "transitório / rate limit)"
                     )
         capture.wait_response_started(
             page, self.response_selector, baseline, self.busy_selectors,
