@@ -681,9 +681,12 @@ class GoogleAIMode(BaseDriver):
         "textarea[placeholder*='Pergunte']:visible",
         "textarea:visible",
     ]
-    # Prosa da resposta (um bloco por turno). Classe ofuscada → volátil.
-    response_selector = "div.n6owBd"
-    content_selector = "div.n6owBd"
+    # Resposta COMPLETA do turno. `div.n6owBd` só pega fragmentos (intro +
+    # pergunta de fechamento); `div.mZJni` é o container da prosa inteira da
+    # resposta (um por turno). Classe ofuscada → volátil (reinspecione se
+    # quebrar: scratchpad/google_inspect5.py).
+    response_selector = "div.mZJni"
+    content_selector = "div.mZJni"
     busy_selectors: list[str] = []      # sem botão de "parar" estável
     settle_s = 3.0
     response_timeout = 240.0            # AI Mode faz busca na web, é lento
