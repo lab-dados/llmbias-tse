@@ -55,6 +55,11 @@ PLATFORM_DRIVERS: dict[str, tuple[str, str]] = {
     "grok": ("grok_momentary", "privada"),
     "claude": ("claude_momentary", "incognito"),
     "deepseek": ("deepseek", "chat_novo"),
+    # WhatsApp/Meta AI: NÃO tem chat novo; o isolamento é por `/reset-all-ais`
+    # (feito no open_new_chat do driver). Requer WhatsApp Web logado (QR) e o
+    # chat do Meta AI aberto à mão. Fora do default: rodar com
+    # `--platforms whatsapp_metaai`.
+    "whatsapp_metaai": ("whatsapp_metaai", "reset_memoria"),
 }
 
 # DeepSeek não oferece conversa temporária/privada na UI (jul/2026). Um chat
