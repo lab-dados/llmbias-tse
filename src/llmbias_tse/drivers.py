@@ -705,6 +705,7 @@ class WhatsAppMetaAI(BaseDriver):
         à mão) e ZERA a memória do Meta AI UMA vez por conversa (`/reset-all-
         ais`). Assim cada conversa começa limpa, mas os turnos de uma conversa
         longa mantêm o contexto entre si."""
+        self._force_focus(page)  # anti-throttle de render do WA Web (aba ocluída)
         if "web.whatsapp.com" not in page.url:
             page.goto(self.new_chat_url, wait_until="domcontentloaded", timeout=90000)
         capture.first_visible(page, self.composer_selectors, timeout=30)
@@ -729,6 +730,54 @@ class WhatsAppMetaAI(BaseDriver):
             pass
         time.sleep(2.0)
 
+    def _force_focus(self, page) -> None:
+        """Faz o renderer tratar a página como SEMPRE focada/visível, mesmo com a
+        janela do Chrome ocluída (atrás do terminal). O WhatsApp Web estrangula a
+        renderização quando `document.hidden` (Page Visibility API), e as flags
+        de linha de comando do Chrome não cobrem esse throttling no nível da app.
+        `Emulation.setFocusEmulationEnabled` (CDP) resolve na raiz: sem isto, o
+        balão recebido só entra no DOM no envio seguinte (atraso de 1 turno).
+        Idempotente e barato; chamado uma vez por conversa."""
+        try:
+            cdp = page.context.new_cdp_session(page)
+            cdp.send("Emulation.setFocusEmulationEnabled", {"enabled": True})
+        except Exception:
+            pass
+        # Reforço: sobrescreve a Page Visibility API para 'visible'/hidden=false.
+        try:
+            page.add_init_script(
+                """Object.defineProperty(document,'hidden',{get:()=>false});
+                   Object.defineProperty(document,'visibilityState',
+                       {get:()=>'visible'});"""
+            )
+        except Exception:
+            pass
+
+    def _scroll_to_bottom(self, page) -> None:
+        """Rola a lista de mensagens até o fim. O WhatsApp Web VIRTUALIZA a
+        lista: um balão recebido novo só entra no DOM quando a view rola até
+        ele. Sem isto, a resposta do Meta AI só era "vista" no envio seguinte
+        (atraso de 1 turno)."""
+        try:
+            page.evaluate(
+                r"""() => {
+                  const main = document.querySelector('#main');
+                  if (!main) return;
+                  let el = main.querySelector('div[role=row]');
+                  while (el && el !== main) {
+                    const s = getComputedStyle(el);
+                    if (/(auto|scroll)/.test(s.overflowY) &&
+                        el.scrollHeight > el.clientHeight) {
+                      el.scrollTop = el.scrollHeight;
+                      return;
+                    }
+                    el = el.parentElement;
+                  }
+                }"""
+            )
+        except Exception:
+            pass
+
     def _incoming_texts(self, page) -> list[str]:
         """Lista dos textos dos balões RECEBIDOS (do Meta AI), em ordem. Uma
         linha é ENVIADA (usuário) se tem `.copyable-text[data-pre-plain-text]`
@@ -745,7 +794,9 @@ class WhatsAppMetaAI(BaseDriver):
                       continue; // enviada (usuário)
                     const cop = r.querySelector('.copyable-text.selectable-text')
                              || r.querySelector('span.selectable-text');
-                    const t = cop ? (cop.innerText || '').trim() : '';
+                    // textContent (NÃO innerText): innerText retorna "" com a
+                    // janela ocluída (layout pulado) -> resposta some por 1 turno
+                    const t = cop ? (cop.textContent || '').trim() : '';
                     if (t) out.push(t);
                   }
                   return out;
@@ -758,42 +809,80 @@ class WhatsAppMetaAI(BaseDriver):
         xs = self._incoming_texts(page)
         return xs[-1] if xs else ""
 
+    def _incoming_msgs(self, page) -> list[dict]:
+        """Balões RECEBIDOS como {id, t}. O `data-id` (prefixo `false_`=recebida,
+        `true_`=enviada) é ÚNICO e ESTÁVEL por mensagem, mesmo com texto idêntico
+        (os refusals de voto repetem) e mesmo com a VIRTUALIZAÇÃO da lista (que
+        faz a CONTAGEM oscilar para cima E para baixo). Detectar por id novo é o
+        único sinal confiável aqui."""
+        try:
+            return page.evaluate(
+                r"""() => {
+                  const main = document.querySelector('#main');
+                  if (!main) return [];
+                  const out = [];
+                  for (const r of main.querySelectorAll('div[role=row]')) {
+                    const idEl = r.querySelector('[data-id]');
+                    const id = idEl ? (idEl.getAttribute('data-id') || '') : '';
+                    const outgoing = id.startsWith('true_') ||
+                      !!r.querySelector('.copyable-text[data-pre-plain-text]');
+                    if (outgoing) continue;              // enviada (usuário)
+                    const cop = r.querySelector('.copyable-text.selectable-text')
+                             || r.querySelector('span.selectable-text');
+                    const t = cop ? (cop.textContent || '').trim() : '';
+                    if (id || t) out.push({id, t});
+                  }
+                  return out;
+                }"""
+            ) or []
+        except Exception:
+            return []
+
     def submit(self, page, prompt: str) -> str:
         """Envia um prompt no chat do Meta AI e captura a resposta. Detecta a
-        resposta NOVA pela CONTAGEM de balões recebidos (não por mudança de
-        texto): o Meta AI repete respostas idênticas (ex.: redirect ao TSE), o
-        que quebraria a detecção por texto. Sem reset aqui (é por conversa)."""
-        base = len(self._incoming_texts(page))
+        resposta NOVA pelo `data-id` (id de mensagem) que ainda não existia antes
+        do envio: robusto a respostas idênticas (o Meta AI repete o redirect ao
+        TSE) E à virtualização da lista (contagem não é monotônica). Sem reset
+        aqui (é por conversa)."""
+        try:
+            page.bring_to_front()  # aba ativa (anti-throttle de render do WA Web)
+        except Exception:
+            pass
+        before = {m["id"] for m in self._incoming_msgs(page) if m["id"]}
         self._send_raw(page, prompt)
-        # espera um NOVO balão recebido (contagem sobe)
-        deadline = time.time() + 90
-        while time.time() < deadline:
-            if len(self._incoming_texts(page)) > base:
-                break
-            time.sleep(0.4)
-        text = self._wait_stable_incoming(page, base)
-        return self._ts_re.sub("", text).strip()
-
-    def _wait_stable_incoming(self, page, base_count: int,
-                              stable_for: float = 3.0, poll: float = 0.5) -> str:
-        """Espera o texto do NOVO balão recebido (índice > base_count)
-        estabilizar. Sem botão de 'parar' no WhatsApp → estabilidade de texto."""
         deadline = time.time() + self.response_timeout
-        last = None
+        last_text = ""
         since = None
+        saw_new = False
         while time.time() < deadline:
-            xs = self._incoming_texts(page)
-            t = xs[-1] if len(xs) > base_count else ""
-            if t and t == last:
-                if since is None:
-                    since = time.time()
-                elif time.time() - since >= stable_for:
-                    return t
-            else:
-                since = None
-                last = t
-            time.sleep(poll)
-        return last or ""
+            try:
+                page.bring_to_front()
+            except Exception:
+                pass
+            self._scroll_to_bottom(page)  # mantém os balões novos renderizados
+            msgs = self._incoming_msgs(page)
+            # balão recebido mais recente cujo id NÃO existia antes do envio
+            newmsg = None
+            for m in reversed(msgs):
+                if m["id"] and m["id"] not in before:
+                    newmsg = m
+                    break
+            t = newmsg["t"] if (newmsg and newmsg["t"]) else ""
+            if t:
+                saw_new = True
+                if t == last_text:
+                    if since is None:
+                        since = time.time()
+                    elif time.time() - since >= 3.0:
+                        break
+                else:
+                    since = None
+                    last_text = t
+            time.sleep(0.5)
+        if os.environ.get("LLMBIAS_WA_DEBUG"):
+            print(f"[WA] id_novo={saw_new} capturado={len(last_text)} chars: "
+                  f"{last_text[:50]!r}", flush=True)
+        return self._ts_re.sub("", last_text).strip()
 
 
 # Registro: nome -> classe. A CLI usa essas chaves.
