@@ -221,17 +221,20 @@ def generate_conversations(store: RunStore, profiles, platforms, eixos,
 
     with sync_playwright() as pw:
         b, ctx = browser.connect(pw)
-        # Fecha abas remanescentes (de execuções anteriores que caíram/foram
-        # mortas antes de fechar a própria aba). Sem isso, os alvos se acumulam
-        # e TRAVAM o CDP (connect_over_cdp passa a estourar o timeout). É seguro
-        # porque a coleta roda SERIAL (um processo por vez).
+        # Cria a PRÓPRIA aba PRIMEIRO (o contexto nunca fica sem página), depois
+        # fecha as abas remanescentes (de execuções anteriores que caíram/foram
+        # mortas antes de fechar a própria aba). Ordem importa: fechar a última
+        # página do contexto CDP mata o contexto e faz o new_page falhar
+        # (TargetClosedError). Sem essa limpeza, os alvos se acumulam e TRAVAM o
+        # connect_over_cdp seguinte. Seguro porque a coleta roda SERIAL.
+        page = ctx.new_page()
         for _pg in list(ctx.pages):
+            if _pg is page:
+                continue
             try:
                 _pg.close()
             except Exception:
                 pass
-        # Tab próprio, fechado ao final (guarda para não vazar em caso de erro).
-        page = ctx.new_page()
         page.set_default_timeout(60000)
         try:
             for i, (pl, p, e) in enumerate(todo):

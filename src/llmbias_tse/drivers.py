@@ -16,6 +16,7 @@ WhatsApp Web é suficientemente diferente para sobrescrever send().
 
 from __future__ import annotations
 
+import os
 import re
 import time
 
@@ -83,7 +84,7 @@ class BaseDriver:
         page.goto(self.new_chat_url, wait_until="domcontentloaded", timeout=60000)
         time.sleep(self.settle_s)
 
-    def submit(self, page, prompt: str, max_limit_waits: int = 6) -> str:
+    def submit(self, page, prompt: str, max_limit_waits: int | None = None) -> str:
         """Envia UM prompt no chat ATUAL (sem abrir chat novo) e captura a
         resposta. É o tijolo das conversas multi-turno.
 
@@ -93,7 +94,11 @@ class BaseDriver:
         testar: recarregar refaz requisições (lista de conversas etc.) e
         **mantém o limite vivo** — o jeito de sair é ficar quieto e esperar.
         """
-        backoff = 90.0
+        # Paciência de rate-limit configurável por env (para runs autônomos que
+        # ciclam plataformas: falhar rápido numa bloqueada e ir para a próxima).
+        if max_limit_waits is None:
+            max_limit_waits = int(os.environ.get("LLMBIAS_MAX_LIMIT_WAITS", "6"))
+        backoff = float(os.environ.get("LLMBIAS_RL_BACKOFF", "90"))
         attempt = 0
         retries_left = self.submit_retries
         # Nº de balões do usuário ANTES deste turno. Numa re-tentativa, se a
