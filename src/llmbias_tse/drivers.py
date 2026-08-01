@@ -692,11 +692,11 @@ class WhatsAppMetaAI(BaseDriver):
         "[role='textbox'][data-tab='10']",
         "footer [role='textbox']",
     ]
-    # Balões RECEBIDOS (do Meta AI). O WhatsApp largou `div.message-in`; agora
-    # o texto fica em `.copyable-text` e o INCOMING carrega a classe (ofuscada)
-    # `_aupe` — outgoing não. VOLÁTIL: reinspecione com tmp/inspect_wa2.py se
-    # quebrar (procure a classe que só os balões da esquerda têm).
-    response_selector = ".copyable-text._aupe"
+    # Balões RECEBIDOS (do Meta AI). DOM ago/2026: as ENVIADAS (usuário) têm
+    # `.copyable-text[data-pre-plain-text]` ("[hora] Nome:"); as RECEBIDAS (Meta
+    # AI) têm `.copyable-text.selectable-text` SEM data-pre-plain-text. VOLÁTIL:
+    # se quebrar, reinspecione (scratchpad wa_dom2.py) qual marca só as recebidas.
+    response_selector = ".copyable-text.selectable-text"
     busy_selectors: list[str] = []  # WhatsApp não tem botão de "parar"
     reset_command = "/reset-all-ais"
 
@@ -729,54 +729,62 @@ class WhatsAppMetaAI(BaseDriver):
             pass
         time.sleep(2.0)
 
-    def _last_incoming(self, page) -> str:
-        """Texto do último balão incoming NÃO-VAZIO. O WhatsApp deixa wrappers
-        `_aupe` vazios (placeholder de streaming) no fim do DOM; pegar só o
-        `.last` cairia neles e voltaria "". Por isso varremos de trás pra
-        frente e retornamos o primeiro com texto."""
+    def _incoming_texts(self, page) -> list[str]:
+        """Lista dos textos dos balões RECEBIDOS (do Meta AI), em ordem. Uma
+        linha é ENVIADA (usuário) se tem `.copyable-text[data-pre-plain-text]`
+        ("[hora] Nome:"); as recebidas não têm. Robusto a respostas idênticas
+        (a contagem sobe mesmo que o texto se repita)."""
         try:
             return page.evaluate(
-                """(sel) => {
-                  const els = Array.from(document.querySelectorAll(sel));
-                  for (let i = els.length - 1; i >= 0; i--) {
-                    const t = (els[i].textContent || '').trim();
-                    if (t) return t;
+                r"""() => {
+                  const main = document.querySelector('#main');
+                  if (!main) return [];
+                  const out = [];
+                  for (const r of main.querySelectorAll('div[role=row]')) {
+                    if (r.querySelector('.copyable-text[data-pre-plain-text]'))
+                      continue; // enviada (usuário)
+                    const cop = r.querySelector('.copyable-text.selectable-text')
+                             || r.querySelector('span.selectable-text');
+                    const t = cop ? (cop.innerText || '').trim() : '';
+                    if (t) out.push(t);
                   }
-                  return '';
-                }""",
-                self.response_selector,
-            ) or ""
+                  return out;
+                }"""
+            ) or []
         except Exception:
-            return ""
+            return []
+
+    def _last_incoming(self, page) -> str:
+        xs = self._incoming_texts(page)
+        return xs[-1] if xs else ""
 
     def submit(self, page, prompt: str) -> str:
-        """Envia um prompt no chat do Meta AI e captura a resposta (último balão
-        incoming não-vazio), tirando o timestamp do fim. Sem reset aqui: o
-        reset é por conversa (open_new_chat), não por turno.
-
-        Sem botão de "parar" no WhatsApp → detecta o fim por estabilidade do
-        texto (não muda por alguns segundos)."""
-        prev = self._last_incoming(page)
+        """Envia um prompt no chat do Meta AI e captura a resposta. Detecta a
+        resposta NOVA pela CONTAGEM de balões recebidos (não por mudança de
+        texto): o Meta AI repete respostas idênticas (ex.: redirect ao TSE), o
+        que quebraria a detecção por texto. Sem reset aqui (é por conversa)."""
+        base = len(self._incoming_texts(page))
         self._send_raw(page, prompt)
-        # espera a resposta COMEÇAR: texto incoming muda em relação ao anterior
+        # espera um NOVO balão recebido (contagem sobe)
         deadline = time.time() + 90
         while time.time() < deadline:
-            t = self._last_incoming(page)
-            if t and t != prev:
+            if len(self._incoming_texts(page)) > base:
                 break
             time.sleep(0.4)
-        # espera ESTABILIZAR
-        text = self._wait_stable_incoming(page, prev)
+        text = self._wait_stable_incoming(page, base)
         return self._ts_re.sub("", text).strip()
 
-    def _wait_stable_incoming(self, page, prev: str, stable_for: float = 3.0,
-                              poll: float = 0.5) -> str:
+    def _wait_stable_incoming(self, page, base_count: int,
+                              stable_for: float = 3.0, poll: float = 0.5) -> str:
+        """Espera o texto do NOVO balão recebido (índice > base_count)
+        estabilizar. Sem botão de 'parar' no WhatsApp → estabilidade de texto."""
         deadline = time.time() + self.response_timeout
         last = None
         since = None
         while time.time() < deadline:
-            t = self._last_incoming(page)
-            if t and t != prev and t == last:
+            xs = self._incoming_texts(page)
+            t = xs[-1] if len(xs) > base_count else ""
+            if t and t == last:
                 if since is None:
                     since = time.time()
                 elif time.time() - since >= stable_for:
@@ -785,7 +793,7 @@ class WhatsAppMetaAI(BaseDriver):
                 since = None
                 last = t
             time.sleep(poll)
-        return (last if last and last != prev else "") or ""
+        return last or ""
 
 
 # Registro: nome -> classe. A CLI usa essas chaves.
