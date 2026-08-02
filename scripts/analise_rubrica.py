@@ -122,7 +122,15 @@ def pair_stats(a, b):
     jac = (n11 / jac_d) if jac_d else None
     den = math.sqrt((n11 + n10) * (n01 + n00) * (n11 + n01) * (n10 + n00))
     phi = ((n11 * n00 - n10 * n01) / den) if den else None
-    return dict(n11=n11, n10=n10, n01=n01, n00=n00, agree=agree, jac=jac, phi=phi)
+    # kappa de Cohen: concordância corrigida pelo acaso (2 avaliadores binários)
+    kappa = None
+    if n:
+        pa1 = (n11 + n10) / n
+        pb1 = (n11 + n01) / n
+        pe = pa1 * pb1 + (1 - pa1) * (1 - pb1)
+        kappa = ((agree - pe) / (1 - pe)) if (1 - pe) > 1e-12 else None
+    return dict(n11=n11, n10=n10, n01=n01, n00=n00, agree=agree, jac=jac,
+                phi=phi, kappa=kappa)
 
 
 def analyse():
