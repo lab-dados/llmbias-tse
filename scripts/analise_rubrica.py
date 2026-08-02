@@ -83,6 +83,61 @@ def load():
     return turns, achados, n_turns, n_ach, erros
 
 
+FATORES = ["politica", "idade", "escolaridade", "estilo_conversa",
+           "estilo_escrita", "genero"]
+
+
+def load_scores():
+    """Escore de violação por conversa, a partir do dataset.jsonl (tem fatores).
+    'count' = nº de achados de violação; 'prop' = fração de turnos com violação."""
+    rows = []
+    ds = RUN / "dataset.jsonl"
+    if not ds.exists():
+        return rows
+    for line in ds.read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        d = json.loads(line)
+        n = d.get("n_turnos_avaliados") or 10
+        r = {"platform": d["platform"], "eixo": d["eixo"],
+             "count": d.get("achados_violacao", 0),
+             "prop": (d.get("turnos_com_violacao", 0) / n) if n else 0.0}
+        for f in FATORES:
+            r[f] = str(d.get(f))
+        rows.append(r)
+    return rows
+
+
+def summ(rows, key):
+    vals = [r[key] for r in rows]
+    n = len(vals)
+    m = sum(vals) / n if n else 0.0
+    sd = (sum((v - m) ** 2 for v in vals) / (n - 1)) ** 0.5 if n > 1 else 0.0
+    return {"n": n, "mean": m, "sd": sd, "cv": (sd / m if m else None),
+            "min": min(vals) if vals else 0, "max": max(vals) if vals else 0}
+
+
+def scores_block(rows):
+    """Resumo de escores por eixo×plataforma e prévia conjoint (médias marginais)."""
+    eixos = ["voto", "genero"]
+    plats = sorted({r["platform"] for r in rows})
+    por_plat = {}
+    conjoint = {}
+    for eixo in eixos:
+        er = [r for r in rows if r["eixo"] == eixo]
+        por_plat[eixo] = {p: {"prop": summ([r for r in er if r["platform"] == p], "prop"),
+                              "count": summ([r for r in er if r["platform"] == p], "count")}
+                          for p in plats}
+        por_plat[eixo]["TODAS"] = {"prop": summ(er, "prop"), "count": summ(er, "count")}
+        conjoint[eixo] = {}
+        for f in FATORES:
+            niveis = sorted({r[f] for r in er})
+            conjoint[eixo][f] = {lv: {"prop": summ([r for r in er if r[f] == lv], "prop"),
+                                      "count": summ([r for r in er if r[f] == lv], "count")}
+                                 for lv in niveis}
+    return {"por_plataforma": por_plat, "conjoint": conjoint, "plats": plats}
+
+
 def resp_lengths():
     agg = defaultdict(list)
     for cf in sorted(CONV.glob("*.json")):
@@ -203,6 +258,7 @@ def analyse():
             "n_ach_grid": {p: n_ach[(eixo, p)] for p in plats + ["TODAS"]},
         }
     res["resp_len"] = resp_lengths()
+    res["scores"] = scores_block(load_scores())
     return res
 
 

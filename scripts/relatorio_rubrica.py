@@ -186,6 +186,51 @@ def per_plat_table(key_pairs, nm):
             f"<tbody>{''.join(rows)}</tbody></table>")
 
 
+FLAB = {"politica": "posição política", "idade": "idade", "genero": "gênero",
+        "escolaridade": "escolaridade", "estilo_conversa": "estilo de conversa",
+        "estilo_escrita": "estilo de escrita"}
+
+
+def score_table():
+    pp = J["scores"]["por_plataforma"]
+    rows = []
+    for p in PLATS + ["TODAS"]:
+        cells = []
+        for eixo in ["voto", "genero"]:
+            s = pp[eixo][p]["prop"]; c = pp[eixo][p]["count"]
+            bg, fg = blue(s["mean"])
+            cells.append(
+                f"<td style='background:{bg};color:{fg}'>{s['mean']:.2f} "
+                f"<span class='n'>&plusmn;{s['sd']:.2f}</span></td>"
+                f"<td>{c['mean']:.1f} <span class='n'>({c['min']} a {c['max']})</span></td>")
+        nome = "<b>Total</b>" if p == "TODAS" else pl(p)
+        rows.append(f"<tr><td>{nome}</td>{''.join(cells)}</tr>")
+    return ("<table class='list'><thead><tr><th>Plataforma</th>"
+            "<th>voto: prop. de turnos com violação</th><th>voto: nº de achados</th>"
+            "<th>gênero: prop. de turnos</th><th>gênero: nº de achados</th>"
+            f"</tr></thead><tbody>{''.join(rows)}</tbody></table>")
+
+
+def conjoint_table(eixo):
+    node = J["scores"]["conjoint"][eixo]
+    rows = []
+    for f in ["politica", "idade", "escolaridade", "estilo_conversa",
+              "estilo_escrita", "genero"]:
+        levels = list(node[f].keys())
+        for i, lv in enumerate(levels):
+            s = node[f][lv]["prop"]
+            bg, fg = blue(s["mean"])
+            fcell = (f"<td rowspan='{len(levels)}' class='crit'>{esc(FLAB[f])}</td>"
+                     if i == 0 else "")
+            rows.append(
+                f"<tr>{fcell}<td>{esc(lv)}</td>"
+                f"<td style='background:{bg};color:{fg};font-weight:700'>{s['mean']:.2f}</td>"
+                f"<td class='n'>{s['n']}</td></tr>")
+    return ("<table class='list'><thead><tr><th>fator</th><th>nível</th>"
+            "<th>escore médio (prop. de turnos com violação)</th><th>n</th></tr>"
+            f"</thead><tbody>{''.join(rows)}</tbody></table>")
+
+
 def criticidade():
     rl = J["resp_len"]
     rows = "".join(
@@ -439,6 +484,9 @@ def build():
         secoes=secoes,
         criticidade=criticidade(),
         rubrica_corrigida=rubrica_corrigida(),
+        score_table=score_table(),
+        conjoint_voto=conjoint_table("voto"),
+        conjoint_genero=conjoint_table("genero"),
     )
 
 
@@ -525,7 +573,26 @@ TEMPLATE = """<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
 </section>
 
 <section>
-  <h2>4. Conclusões e próximos passos</h2>
+  <h2>4. Escore de violação por conversa: média e variabilidade</h2>
+  <p>A rubrica 4.0 não define um escore somado, por decisão de projeto. Ainda assim, para dimensionar quanta informação os dados carregam, construímos aqui um escore descritivo baseado nos tipos (o eixo substantivo). Definimos dois: a <b>proporção de turnos com ao menos uma violação</b> (entre 0 e 1, mais comparável entre plataformas por estar limitada), e o <b>número de achados de violação</b> por conversa (mais sensível, porém inflado pela verbosidade). A tabela traz a média e o desvio padrão de cada um, por plataforma e no total.</p>
+  {score_table}
+  <p>A leitura mais importante é a da variabilidade. <b>Entre plataformas</b>, a dispersão é alta: no eixo voto o escore vai de 0,00 (WhatsApp, que recusa o tema) a 1,00 (DeepSeek, que viola em todos os turnos), com coeficiente de variação de 0,68; no eixo gênero, de 0,07 (Claude) a 0,83 (Grok), com coeficiente de 0,88. Ou seja, o escore separa bem as plataformas, que é o que se deseja. <b>Dentro de cada plataforma</b>, ao contrário, o desvio padrão é pequeno, porque há apenas três conversas por plataforma e eixo.</p>
+  <p>Duas ressalvas para a escolha do escore no experimento completo. A proporção de turnos <b>satura</b>: no voto, DeepSeek, Gemini e Grok ficam em torno de 1,00 e deixam de se distinguir no topo da escala. O número de achados continua separando essas plataformas, mas é <b>confundido pela extensão</b> da resposta (DeepSeek produz cerca de 42 achados por conversa no voto, contra 6 do Claude). Um escore intermediário, como o número de tipos distintos acionados, ou a contagem normalizada pela extensão, tende a ser preferível a qualquer um dos extremos.</p>
+</section>
+
+<section>
+  <h2>5. Prévia da análise conjoint</h2>
+  <p>O objetivo do desenho conjoint é estimar o efeito de cada fator da persona (posição política, idade, escolaridade, estilo de conversa e estilo de escrita) sobre o comportamento do modelo. A saída típica é a <b>média marginal</b> do escore em cada nível de cada fator. As tabelas abaixo trazem essa média marginal para o escore de proporção de turnos com violação, primeiro no eixo voto e depois no de gênero.</p>
+  <p><b>Esta prévia é apenas ilustrativa do formato, não um resultado.</b> Com apenas três personas, os fatores estão <b>confundidos entre si</b>: cada nível de um fator corresponde a valores fixos dos demais. O sintoma fica evidente nas tabelas, em que posição política e idade produzem números idênticos, pois a persona de esquerda é também a de 60 anos, a de centro é a de 18, e assim por diante. Não é possível, portanto, separar o efeito da política do efeito da idade com estes dados.</p>
+  <p><b>Eixo voto.</b></p>
+  {conjoint_voto}
+  <p><b>Eixo gênero.</b></p>
+  {conjoint_genero}
+  <p>No experimento completo, muitas personas são sorteadas de forma que os fatores variem de maneira cruzada e independente. A mesma tabela passa então a estimar efeitos identificáveis (as chamadas AMCE, ou médias marginais dos componentes), acompanhados de intervalos de confiança obtidos por regressão. Com os dados atuais, o que se pode dizer é apenas que o escore de voto foi ligeiramente maior nas personas de esquerda e mais velhas, e o de gênero nas personas de centro e mais jovens, sempre lembrando que esses recortes estão confundidos e servem só para mostrar como a leitura final será feita.</p>
+</section>
+
+<section>
+  <h2>6. Conclusões e próximos passos</h2>
   <p>O pré-teste cumpriu seu objetivo: o pipeline de coleta e o LLM-as-judge funcionaram de ponta a ponta nas sete plataformas, e a rubrica 4.0 produziu marcações interpretáveis nos dois eixos. A auditoria dos itens, contudo, aponta ajustes concretos antes do experimento completo.</p>
   <p>No plano dos <b>tipos</b>, a dimensão substantiva está bem construída: os tipos não são redundantes entre si em nenhum dos eixos. O problema é de cobertura no eixo de gênero, onde os tipos mais graves (ameaça física, sexualização, silenciamento) quase não foram acionados por estas personas. No plano das <b>vozes</b>, o achado central é que confirmação ao usuário (V3) e voz própria (V4) se confundem na prática: no gênero com concordância acima do acaso, e no voto por serem ambas quase onipresentes. Como V3 é justamente o indicador de bajulação que o experimento pretende medir, a solução não é descartá-la, e sim tornar V4 mutuamente exclusiva de V3. As <b>resistências</b> mostram sobreposição parcial, menos crítica.</p>
   <p><b>Próximos passos sugeridos:</b></p>
@@ -539,7 +606,7 @@ TEMPLATE = """<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
 </section>
 
 <section>
-  <h2>5. Rubrica corrigida (proposta para o experimento completo)</h2>
+  <h2>7. Rubrica corrigida (proposta para o experimento completo)</h2>
   <p>As mudanças concentram-se no eixo instrumental (vozes). Os tipos permanecem como na versão 4.0, em ambos os eixos, por estarem bem separados. As resistências também permanecem, com uma nota de atenção.</p>
   <h3>Vozes (eixo instrumental), com a redefinição de V4</h3>
   {rubrica_corrigida}
