@@ -124,29 +124,32 @@ def pair_stats(a, b):
                 phi=phi, kappa=kappa)
 
 
-def pairwise(codes, cols):
+def pairwise_full(codes, items, keyfn, plats):
+    """Pares dentro de uma classe: estatística agregada + por plataforma.
+
+    items: lista de dicts com chave 'platform'; keyfn(item) -> conjunto de
+    códigos presentes naquele item (resposta ou achado).
+    """
+    def cols_of(sub):
+        return {c: [1 if c in keyfn(it) else 0 for it in sub] for c in codes}
+
+    pooled = cols_of(items)
+    by_plat = {p: cols_of([it for it in items if it["platform"] == p])
+               for p in plats}
     out = []
     for i in range(len(codes)):
         for j in range(i + 1, len(codes)):
-            st = pair_stats(cols[codes[i]], cols[codes[j]])
-            st["a"], st["b"] = codes[i], codes[j]
+            ca, cb = codes[i], codes[j]
+            st = pair_stats(pooled[ca], pooled[cb])
+            st["a"], st["b"] = ca, cb
+            st["per_plat"] = {}
+            for p in plats:
+                pst = pair_stats(by_plat[p][ca], by_plat[p][cb])
+                st["per_plat"][p] = {"kappa": pst["kappa"], "jac": pst["jac"],
+                                     "n11": pst["n11"],
+                                     "n": pst["n11"] + pst["n10"] + pst["n01"]
+                                     + pst["n00"]}
             out.append(st)
-    return out
-
-
-def ident_por_plat(items, codes, keyfn, plats):
-    """Pares idênticos (n10=n01=0, n11>0) por plataforma; items c/ .platform."""
-    out = {}
-    for p in plats:
-        sub = [it for it in items if it["platform"] == p]
-        cols = {c: [1 if c in keyfn(it) else 0 for it in sub] for c in codes}
-        idents = []
-        for i in range(len(codes)):
-            for j in range(i + 1, len(codes)):
-                st = pair_stats(cols[codes[i]], cols[codes[j]])
-                if st["n10"] == 0 and st["n01"] == 0 and st["n11"] > 0:
-                    idents.append((codes[i], codes[j], st["n11"], len(sub)))
-        out[p] = idents
     return out
 
 
@@ -171,13 +174,10 @@ def analyse():
                 d[p] = (cnt, len(sub))
             freq[code] = d
 
-        # redundância DENTRO de classe
-        colsT = {c: [1 if c in t["present"] else 0 for t in et] for c in tcodes}
-        pairs_T = pairwise(tcodes, colsT)
-        colsR = {c: [1 if c in t["present"] else 0 for t in et] for c in RCODES}
-        pairs_R = pairwise(RCODES, colsR)
-        colsV = {c: [1 if c in a["voz"] else 0 for a in ea] for c in VCODES}
-        pairs_V = pairwise(VCODES, colsV)
+        # redundância DENTRO de classe (agregado + por plataforma)
+        pairs_T = pairwise_full(tcodes, et, lambda x: x["present"], plats)
+        pairs_R = pairwise_full(RCODES, et, lambda x: x["present"], plats)
+        pairs_V = pairwise_full(VCODES, ea, lambda x: x["voz"], plats)
 
         # perfil de vozes por tipo (nível achado)
         tv = defaultdict(Counter)
@@ -201,8 +201,6 @@ def analyse():
             "tipo_tot": {tp: ttot[tp] for tp in tcodes},
             "n_turnos_grid": {p: n_turns[(eixo, p)] for p in plats + ["TODAS"]},
             "n_ach_grid": {p: n_ach[(eixo, p)] for p in plats + ["TODAS"]},
-            "ident_plat_T": ident_por_plat(et, tcodes, lambda x: x["present"], plats),
-            "ident_plat_V": ident_por_plat(ea, VCODES, lambda x: x["voz"], plats),
         }
     res["resp_len"] = resp_lengths()
     return res
