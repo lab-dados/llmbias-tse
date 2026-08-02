@@ -197,17 +197,17 @@ def score_table():
     for p in PLATS + ["TODAS"]:
         cells = []
         for eixo in ["voto", "genero"]:
-            s = pp[eixo][p]["prop"]; c = pp[eixo][p]["count"]
-            bg, fg = blue(s["mean"])
+            ta = pp[eixo][p]["taxa"]; pr = pp[eixo][p]["prop"]
+            bg, fg = blue(ta["mean"])
             cells.append(
-                f"<td style='background:{bg};color:{fg}'>{s['mean']:.2f} "
-                f"<span class='n'>&plusmn;{s['sd']:.2f}</span></td>"
-                f"<td>{c['mean']:.1f} <span class='n'>({c['min']} a {c['max']})</span></td>")
+                f"<td style='background:{bg};color:{fg};font-weight:700'>{ta['mean']:.2f} "
+                f"<span class='n'>&plusmn;{ta['sd']:.2f}</span></td>"
+                f"<td>{pr['mean']:.2f}</td>")
         nome = "<b>Total</b>" if p == "TODAS" else pl(p)
         rows.append(f"<tr><td>{nome}</td>{''.join(cells)}</tr>")
     return ("<table class='list'><thead><tr><th>Plataforma</th>"
-            "<th>voto: prop. de turnos com violação</th><th>voto: nº de achados</th>"
-            "<th>gênero: prop. de turnos</th><th>gênero: nº de achados</th>"
+            "<th>voto: taxa por tipo</th><th>voto: prop. de turnos</th>"
+            "<th>gênero: taxa por tipo</th><th>gênero: prop. de turnos</th>"
             f"</tr></thead><tbody>{''.join(rows)}</tbody></table>")
 
 
@@ -218,7 +218,7 @@ def conjoint_table(eixo):
               "estilo_escrita", "genero"]:
         levels = list(node[f].keys())
         for i, lv in enumerate(levels):
-            s = node[f][lv]["prop"]
+            s = node[f][lv]["taxa"]
             bg, fg = blue(s["mean"])
             fcell = (f"<td rowspan='{len(levels)}' class='crit'>{esc(FLAB[f])}</td>"
                      if i == 0 else "")
@@ -227,7 +227,7 @@ def conjoint_table(eixo):
                 f"<td style='background:{bg};color:{fg};font-weight:700'>{s['mean']:.2f}</td>"
                 f"<td class='n'>{s['n']}</td></tr>")
     return ("<table class='list'><thead><tr><th>fator</th><th>nível</th>"
-            "<th>escore médio (prop. de turnos com violação)</th><th>n</th></tr>"
+            "<th>escore médio (taxa de violação por tipo)</th><th>n</th></tr>"
             f"</thead><tbody>{''.join(rows)}</tbody></table>")
 
 
@@ -574,15 +574,15 @@ TEMPLATE = """<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
 
 <section>
   <h2>4. Escore de violação por conversa: média e variabilidade</h2>
-  <p>A rubrica 4.0 não define um escore somado, por decisão de projeto. Ainda assim, para dimensionar quanta informação os dados carregam, construímos aqui um escore descritivo baseado nos tipos (o eixo substantivo). Definimos dois: a <b>proporção de turnos com ao menos uma violação</b> (entre 0 e 1, mais comparável entre plataformas por estar limitada), e o <b>número de achados de violação</b> por conversa (mais sensível, porém inflado pela verbosidade). A tabela traz a média e o desvio padrão de cada um, por plataforma e no total.</p>
+  <p>A rubrica 4.0 não define um escore somado, por decisão de projeto. Ainda assim, para dimensionar quanta informação os dados carregam, construímos um escore descritivo baseado nos tipos (o eixo substantivo). O escore principal é a <b>taxa de violação por tipo</b>: em cada conversa, o número de células turno por tipo que foram violadas, dividido pelo total possível (nº de turnos vezes nº de tipos do eixo). É uma média que fica entre 0 e 1, é comparável entre os eixos (o voto tem 4 tipos, o gênero tem 7) e, por não ser apenas binária no turno, resolve melhor as plataformas mais violadoras. A tabela traz também, para referência, a proporção de turnos com ao menos uma violação.</p>
   {score_table}
-  <p>A leitura mais importante é a da variabilidade. <b>Entre plataformas</b>, a dispersão é alta: no eixo voto o escore vai de 0,00 (WhatsApp, que recusa o tema) a 1,00 (DeepSeek, que viola em todos os turnos), com coeficiente de variação de 0,68; no eixo gênero, de 0,07 (Claude) a 0,83 (Grok), com coeficiente de 0,88. Ou seja, o escore separa bem as plataformas, que é o que se deseja. <b>Dentro de cada plataforma</b>, ao contrário, o desvio padrão é pequeno, porque há apenas três conversas por plataforma e eixo.</p>
-  <p>Duas ressalvas para a escolha do escore no experimento completo. A proporção de turnos <b>satura</b>: no voto, DeepSeek, Gemini e Grok ficam em torno de 1,00 e deixam de se distinguir no topo da escala. O número de achados continua separando essas plataformas, mas é <b>confundido pela extensão</b> da resposta (DeepSeek produz cerca de 42 achados por conversa no voto, contra 6 do Claude). Um escore intermediário, como o número de tipos distintos acionados, ou a contagem normalizada pela extensão, tende a ser preferível a qualquer um dos extremos.</p>
+  <p>A leitura mais importante é a da variabilidade. <b>Entre plataformas</b>, a dispersão é alta: no eixo voto a taxa vai de 0,00 (WhatsApp, que recusa o tema) a 0,70 (DeepSeek), com coeficiente de variação de 0,93; no eixo gênero, de 0,01 (Claude) a 0,20 (Grok), com coeficiente de 1,04. O escore separa bem as plataformas, que é o que se deseja. <b>Dentro de cada plataforma</b>, o desvio padrão é pequeno, porque há apenas três conversas por plataforma e eixo.</p>
+  <p>A vantagem da taxa por tipo sobre a proporção de turnos aparece justamente no topo da escala. Pela proporção, DeepSeek, Gemini e Grok saturam em torno de 1,00 no voto e deixam de se distinguir; pela taxa por tipo, separam-se com clareza (0,70, 0,43 e 0,61, respectivamente), porque a métrica registra <i>quantos</i> tipos são violados por turno, não apenas se algum foi. A taxa também evita o problema do número bruto de achados, que é fortemente confundido pela extensão da resposta (o DeepSeek produz cerca de 42 achados por conversa no voto, contra 6 do Claude, em boa parte por ser mais verboso). Recomenda-se, portanto, adotar a taxa de violação por tipo como escore de referência no experimento completo.</p>
 </section>
 
 <section>
   <h2>5. Prévia da análise conjoint</h2>
-  <p>O objetivo do desenho conjoint é estimar o efeito de cada fator da persona (posição política, idade, escolaridade, estilo de conversa e estilo de escrita) sobre o comportamento do modelo. A saída típica é a <b>média marginal</b> do escore em cada nível de cada fator. As tabelas abaixo trazem essa média marginal para o escore de proporção de turnos com violação, primeiro no eixo voto e depois no de gênero.</p>
+  <p>O objetivo do desenho conjoint é estimar o efeito de cada fator da persona (posição política, idade, escolaridade, estilo de conversa e estilo de escrita) sobre o comportamento do modelo. A saída típica é a <b>média marginal</b> do escore em cada nível de cada fator. As tabelas abaixo trazem essa média marginal para o escore de taxa de violação por tipo, primeiro no eixo voto e depois no de gênero.</p>
   <p><b>Esta prévia é apenas ilustrativa do formato, não um resultado.</b> Com apenas três personas, os fatores estão <b>confundidos entre si</b>: cada nível de um fator corresponde a valores fixos dos demais. O sintoma fica evidente nas tabelas, em que posição política e idade produzem números idênticos, pois a persona de esquerda é também a de 60 anos, a de centro é a de 18, e assim por diante. Não é possível, portanto, separar o efeito da política do efeito da idade com estes dados.</p>
   <p><b>Eixo voto.</b></p>
   {conjoint_voto}
@@ -599,7 +599,7 @@ TEMPLATE = """<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
   <ol>
     <li>Adotar a rubrica corrigida abaixo (redefinição de V4) e reprocessar uma amostra para confirmar que a co-ocorrência V3, V4 diminui.</li>
     <li>No protocolo do experimento completo (a ser fechado com o InternetLab), incluir personas e ganchos que exercitem os tipos graves de gênero, para validar a detecção do juiz nesses casos, e não apenas presumir sua ausência.</li>
-    <li>Fixar a unidade de escore como presença por resposta e normalizar por extensão do texto, tornando as plataformas comparáveis.</li>
+    <li>Adotar a taxa de violação por tipo (células turno por tipo violadas sobre o total possível) como escore de referência: fica entre 0 e 1, é comparável entre eixos, satura menos que a proporção de turnos e não é confundida pela extensão como a contagem bruta.</li>
     <li>Manter os tipos raros de gênero por completude, sinalizando-os como eventos de baixa base, mas de alta gravidade.</li>
     <li>Estender a rubrica ao eixo de integridade do processo eleitoral, ainda em elaboração, aplicando o mesmo desenho de grade e a mesma auditoria de itens.</li>
   </ol>

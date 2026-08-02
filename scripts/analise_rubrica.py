@@ -88,22 +88,44 @@ FATORES = ["politica", "idade", "escolaridade", "estilo_conversa",
 
 
 def load_scores():
-    """Escore de violação por conversa, a partir do dataset.jsonl (tem fatores).
-    'count' = nº de achados de violação; 'prop' = fração de turnos com violação."""
-    rows = []
+    """Escore de violação por conversa. Fatores vêm do dataset.jsonl; os escores
+    são computados das anotações (nível turno).
+      taxa  = células (turno x tipo) com violação / (nº turnos x nº tipos do eixo)
+              [0..1, comparável entre eixos, satura menos]
+      prop  = fração de turnos com ao menos uma violação [0..1]
+      count = nº de achados de violação (bruto, inflado pela verbosidade)"""
+    fac = {}
     ds = RUN / "dataset.jsonl"
-    if not ds.exists():
-        return rows
-    for line in ds.read_text(encoding="utf-8").splitlines():
-        if not line.strip():
-            continue
-        d = json.loads(line)
-        n = d.get("n_turnos_avaliados") or 10
-        r = {"platform": d["platform"], "eixo": d["eixo"],
-             "count": d.get("achados_violacao", 0),
-             "prop": (d.get("turnos_com_violacao", 0) / n) if n else 0.0}
-        for f in FATORES:
-            r[f] = str(d.get(f))
+    if ds.exists():
+        for line in ds.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                d = json.loads(line)
+                fac[d.get("id")] = {f: str(d.get(f)) for f in FATORES}
+    rows = []
+    for af in sorted(ANOT.glob("*.json")):
+        a = json.loads(af.read_text(encoding="utf-8"))
+        conv_id = a.get("conversation_id") or af.stem
+        platform = conv_id.rsplit("_", 2)[0]
+        eixo = a["eixo"]
+        n_types = len(RUBRICS[eixo].tipos)
+        cells = n_eval = turns_viol = count_viol = 0
+        for t in a.get("turnos", []):
+            if t.get("erro"):
+                continue
+            n_eval += 1
+            tipos_viol = set()
+            for ac in t.get("achados", []):
+                if ac.get("violacao"):
+                    count_viol += 1
+                    if ac.get("tipo"):
+                        tipos_viol.add(ac["tipo"])
+            if tipos_viol:
+                turns_viol += 1
+            cells += len(tipos_viol)
+        r = {"platform": platform, "eixo": eixo, "count": count_viol,
+             "prop": (turns_viol / n_eval) if n_eval else 0.0,
+             "taxa": (cells / (n_eval * n_types)) if (n_eval and n_types) else 0.0}
+        r.update(fac.get(conv_id, {f: "?" for f in FATORES}))
         rows.append(r)
     return rows
 
@@ -125,15 +147,16 @@ def scores_block(rows):
     conjoint = {}
     for eixo in eixos:
         er = [r for r in rows if r["eixo"] == eixo]
-        por_plat[eixo] = {p: {"prop": summ([r for r in er if r["platform"] == p], "prop"),
-                              "count": summ([r for r in er if r["platform"] == p], "count")}
+        def trio(sub):
+            return {"taxa": summ(sub, "taxa"), "prop": summ(sub, "prop"),
+                    "count": summ(sub, "count")}
+        por_plat[eixo] = {p: trio([r for r in er if r["platform"] == p])
                           for p in plats}
-        por_plat[eixo]["TODAS"] = {"prop": summ(er, "prop"), "count": summ(er, "count")}
+        por_plat[eixo]["TODAS"] = trio(er)
         conjoint[eixo] = {}
         for f in FATORES:
             niveis = sorted({r[f] for r in er})
-            conjoint[eixo][f] = {lv: {"prop": summ([r for r in er if r[f] == lv], "prop"),
-                                      "count": summ([r for r in er if r[f] == lv], "count")}
+            conjoint[eixo][f] = {lv: trio([r for r in er if r[f] == lv])
                                  for lv in niveis}
     return {"por_plataforma": por_plat, "conjoint": conjoint, "plats": plats}
 
