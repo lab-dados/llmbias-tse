@@ -1,22 +1,21 @@
 """Análise dos itens da rubrica 4.0 (LLM-as-judge) sobre um run do conjoint.
 
-Unidade de análise: a RESPOSTA do assistente (turno avaliado). Para cada turno,
-marca-se a PRESENÇA (0/1) de cada item da rubrica:
-  - tipos substantivos  Tn  (algum achado daquele tipo, qualquer voz)
-  - vozes instrumentais Vn  (algum achado com aquela voz)
-  - resistências        Rn  (bloco de resistência do turno)
-e das células da grade tipo×voz.
+IMPORTANTE (níveis): a rubrica é uma grade tipo×voz. Cada achado do juiz é
+UM tipo (Tn) + um VETOR de vozes (Vn) que o qualificam. Logo tipo e voz vivem
+em níveis diferentes e NÃO se comparam entre si (a voz descreve o tipo). A
+redundância é analisada DENTRO de cada eixo da grade:
+  - entre TIPOS   (T-vs-T): unidade = resposta (turno). Dois tipos redundantes
+    aparecem sempre nas mesmas respostas.
+  - entre VOZES   (V-vs-V): unidade = ACHADO (trecho). Duas vozes redundantes
+    são atribuídas sempre ao mesmo trecho.
+  - entre RESIST. (R-vs-R): unidade = resposta.
+A relação tipo↔voz é descrita pelo PERFIL DE VOZES POR TIPO (para cada T, o
+vetor de Vs), não por concordância.
 
-Objetivos:
-  (1) itens que NUNCA aparecem (candidatos a remoção);
-  (2) itens REDUNDANTES: colunas 0/1 idênticas entre turnos (concordância
-      completa, n10=n01=0) -> medem a mesma coisa. Distingue redundância
-      "genuína" (co-ocorrem como 1) de "trivial" (ambos nunca aparecem).
-Tudo no total (por eixo) e por plataforma. Mais leitura de comparabilidade e
-variabilidade.
+Cobertura (objetivo 1): presença por resposta de cada item (candidatos a
+remoção = nunca aparecem). Redundância (objetivo 2): kappa/phi dentro de classe.
 
 Uso: uv run python scripts/analise_rubrica.py [run_dir]
-Gera <run_dir>/relatorio_rubrica.html e <run_dir>/analise_rubrica.json
 """
 from __future__ import annotations
 
@@ -32,11 +31,11 @@ RUN = Path(sys.argv[1]) if len(sys.argv) > 1 else Path("data/pretest1")
 ANOT = RUN / "annotations"
 CONV = RUN / "conversations"
 EIXOS = ["voto", "genero"]
+VCODES = [v.codigo for v in VOZES]
+RCODES = [r.codigo for r in RESISTENCIAS]
 
 
-# ---------------------------------------------------------------- rótulos
 def criteria(eixo: str):
-    """Lista ordenada de (codigo, classe, rotulo) dos itens do eixo."""
     r = RUBRICS[eixo]
     out = []
     for t in r.tipos:
@@ -49,16 +48,12 @@ def criteria(eixo: str):
     return out
 
 
-def code_label(eixo):
-    return {c: lab for c, _, lab in criteria(eixo)}
-
-
 # ---------------------------------------------------------------- carga
 def load():
-    """Constrói as linhas por turno e a grade tipo×voz."""
-    rows = []            # {platform, eixo, present:set}
-    grid = defaultdict(Counter)   # (eixo, plat|'TODAS') -> Counter[(tipo,voz)]
-    n_turns_grid = defaultdict(int)
+    turns = []     # {platform, eixo, present:set}  (nível resposta)
+    achados = []   # {platform, eixo, tipo, voz:set} (nível achado)
+    n_turns = defaultdict(int)     # (eixo, plat|'TODAS') -> nº respostas
+    n_ach = defaultdict(int)       # (eixo, plat|'TODAS') -> nº achados
     erros = 0
     for af in sorted(ANOT.glob("*.json")):
         a = json.loads(af.read_text(encoding="utf-8"))
@@ -70,29 +65,25 @@ def load():
                 erros += 1
                 continue
             present = set()
-            cells = set()
             for ac in t.get("achados", []):
                 tp = ac.get("tipo")
-                vs = ac.get("voz", []) or []
+                vs = set(ac.get("voz", []) or [])
                 if tp:
                     present.add(tp)
-                for v in vs:
-                    present.add(v)
-                    if tp:
-                        cells.add((tp, v))
+                    achados.append({"platform": platform, "eixo": eixo,
+                                    "tipo": tp, "voz": vs})
+                    n_ach[(eixo, platform)] += 1
+                    n_ach[(eixo, "TODAS")] += 1
+                present |= vs
             for rr in t.get("resistencia", []) or []:
                 present.add(rr)
-            rows.append({"platform": platform, "eixo": eixo, "present": present})
-            for c in cells:
-                grid[(eixo, platform)][c] += 1
-                grid[(eixo, "TODAS")][c] += 1
-            n_turns_grid[(eixo, platform)] += 1
-            n_turns_grid[(eixo, "TODAS")] += 1
-    return rows, grid, n_turns_grid, erros
+            turns.append({"platform": platform, "eixo": eixo, "present": present})
+            n_turns[(eixo, platform)] += 1
+            n_turns[(eixo, "TODAS")] += 1
+    return turns, achados, n_turns, n_ach, erros
 
 
 def resp_lengths():
-    """Comprimento médio de resposta por (plataforma, eixo) — confundidor."""
     agg = defaultdict(list)
     for cf in sorted(CONV.glob("*.json")):
         d = json.loads(cf.read_text(encoding="utf-8"))
@@ -101,7 +92,8 @@ def resp_lengths():
         for t in d.get("turns", []):
             if t.get("ok"):
                 agg[(platform, eixo)].append(len((t.get("response") or "")))
-    return {k: (sum(v) / len(v) if v else 0) for k, v in agg.items()}
+    return {f"{p}|{e}": round(sum(v) / len(v)) if v else 0
+            for (p, e), v in agg.items()}
 
 
 # ---------------------------------------------------------------- estatística
@@ -122,7 +114,6 @@ def pair_stats(a, b):
     jac = (n11 / jac_d) if jac_d else None
     den = math.sqrt((n11 + n10) * (n01 + n00) * (n11 + n01) * (n10 + n00))
     phi = ((n11 * n00 - n10 * n01) / den) if den else None
-    # kappa de Cohen: concordância corrigida pelo acaso (2 avaliadores binários)
     kappa = None
     if n:
         pa1 = (n11 + n10) / n
@@ -133,68 +124,87 @@ def pair_stats(a, b):
                 phi=phi, kappa=kappa)
 
 
+def pairwise(codes, cols):
+    out = []
+    for i in range(len(codes)):
+        for j in range(i + 1, len(codes)):
+            st = pair_stats(cols[codes[i]], cols[codes[j]])
+            st["a"], st["b"] = codes[i], codes[j]
+            out.append(st)
+    return out
+
+
+def ident_por_plat(items, codes, keyfn, plats):
+    """Pares idênticos (n10=n01=0, n11>0) por plataforma; items c/ .platform."""
+    out = {}
+    for p in plats:
+        sub = [it for it in items if it["platform"] == p]
+        cols = {c: [1 if c in keyfn(it) else 0 for it in sub] for c in codes}
+        idents = []
+        for i in range(len(codes)):
+            for j in range(i + 1, len(codes)):
+                st = pair_stats(cols[codes[i]], cols[codes[j]])
+                if st["n10"] == 0 and st["n01"] == 0 and st["n11"] > 0:
+                    idents.append((codes[i], codes[j], st["n11"], len(sub)))
+        out[p] = idents
+    return out
+
+
 def analyse():
-    rows, grid, n_turns_grid, erros = load()
-    rlen = resp_lengths()
-    platforms = sorted({r["platform"] for r in rows})
-    res = {"platforms": platforms, "erros_juiz": erros, "eixos": {}}
+    turns, achados, n_turns, n_ach, erros = load()
+    plats = sorted({t["platform"] for t in turns})
+    res = {"platforms": plats, "erros_juiz": erros, "eixos": {}}
 
     for eixo in EIXOS:
         crit = criteria(eixo)
-        codes = [c for c, _, _ in crit]
-        erows = [r for r in rows if r["eixo"] == eixo]
-        n_all = len(erows)
-        # frequência: contagem por (código, plataforma) e total
-        freq = {}  # code -> {plat: (count, n)}; 'TODAS'
-        for code in codes:
+        tcodes = [c for c, cls, _ in crit if cls == "tipo"]
+        et = [t for t in turns if t["eixo"] == eixo]
+        ea = [a for a in achados if a["eixo"] == eixo]
+
+        # cobertura (nível resposta) de todos os itens
+        freq = {}
+        for code, _, _ in crit:
             d = {}
-            for plat in platforms + ["TODAS"]:
-                sub = erows if plat == "TODAS" else [r for r in erows
-                                                     if r["platform"] == plat]
-                cnt = sum(1 for r in sub if code in r["present"])
-                d[plat] = (cnt, len(sub))
+            for p in plats + ["TODAS"]:
+                sub = et if p == "TODAS" else [t for t in et if t["platform"] == p]
+                cnt = sum(1 for t in sub if code in t["present"])
+                d[p] = (cnt, len(sub))
             freq[code] = d
 
-        # colunas binárias (todas as plataformas) p/ redundância
-        cols = {code: [1 if code in r["present"] else 0 for r in erows]
-                for code in codes}
-        pairs = []
-        for i in range(len(codes)):
-            for j in range(i + 1, len(codes)):
-                ca, cb = codes[i], codes[j]
-                st = pair_stats(cols[ca], cols[cb])
-                st["a"], st["b"] = ca, cb
-                pairs.append(st)
+        # redundância DENTRO de classe
+        colsT = {c: [1 if c in t["present"] else 0 for t in et] for c in tcodes}
+        pairs_T = pairwise(tcodes, colsT)
+        colsR = {c: [1 if c in t["present"] else 0 for t in et] for c in RCODES}
+        pairs_R = pairwise(RCODES, colsR)
+        colsV = {c: [1 if c in a["voz"] else 0 for a in ea] for c in VCODES}
+        pairs_V = pairwise(VCODES, colsV)
 
-        # grade tipo×voz (total)
-        gcells = grid[(eixo, "TODAS")]
-        # redundância por plataforma (colunas idênticas por plataforma)
-        per_plat_ident = {}
-        for plat in platforms:
-            sub = [r for r in erows if r["platform"] == plat]
-            pcols = {code: [1 if code in r["present"] else 0 for r in sub]
-                     for code in codes}
-            idents = []
-            for i in range(len(codes)):
-                for j in range(i + 1, len(codes)):
-                    ca, cb = codes[i], codes[j]
-                    st = pair_stats(pcols[ca], pcols[cb])
-                    if st["n10"] == 0 and st["n01"] == 0 and st["n11"] > 0:
-                        idents.append((ca, cb, st["n11"], len(sub)))
-            per_plat_ident[plat] = idents
+        # perfil de vozes por tipo (nível achado)
+        tv = defaultdict(Counter)
+        ttot = Counter()
+        for a in ea:
+            ttot[a["tipo"]] += 1
+            for v in a["voz"]:
+                tv[a["tipo"]][v] += 1
+        type_voice = {tp: {v: tv[tp].get(v, 0) for v in VCODES} for tp in tcodes}
 
         res["eixos"][eixo] = {
             "titulo": RUBRICS[eixo].titulo,
-            "n_turnos": n_all,
+            "n_turnos": len(et),
+            "n_achados": len(ea),
             "criteria": crit,
             "freq": freq,
-            "pairs": pairs,
-            "grid_cells": {f"{t}|{v}": c for (t, v), c in gcells.items()},
-            "n_turnos_grid": {p: n_turns_grid[(eixo, p)]
-                              for p in platforms + ["TODAS"]},
-            "per_plat_ident": per_plat_ident,
+            "pairs_T": pairs_T,
+            "pairs_V": pairs_V,
+            "pairs_R": pairs_R,
+            "type_voice": type_voice,
+            "tipo_tot": {tp: ttot[tp] for tp in tcodes},
+            "n_turnos_grid": {p: n_turns[(eixo, p)] for p in plats + ["TODAS"]},
+            "n_ach_grid": {p: n_ach[(eixo, p)] for p in plats + ["TODAS"]},
+            "ident_plat_T": ident_por_plat(et, tcodes, lambda x: x["present"], plats),
+            "ident_plat_V": ident_por_plat(ea, VCODES, lambda x: x["voz"], plats),
         }
-    res["resp_len"] = {f"{p}|{e}": round(v) for (p, e), v in rlen.items()}
+    res["resp_len"] = resp_lengths()
     return res
 
 
@@ -203,14 +213,15 @@ if __name__ == "__main__":
     (RUN / "analise_rubrica.json").write_text(
         json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
     print("análise salva em", RUN / "analise_rubrica.json")
-    print("plataformas:", out["platforms"])
     for eixo in EIXOS:
         e = out["eixos"][eixo]
-        print(f"\n[{eixo}] {e['n_turnos']} turnos")
-        never = [c for c in [cc for cc, _, _ in e["criteria"]]
-                 if e["freq"][c]["TODAS"][0] == 0]
-        print("  nunca aparecem (total):", never or "nenhum")
-        ident = [(p["a"], p["b"], p["n11"]) for p in e["pairs"]
-                 if p["n10"] == 0 and p["n01"] == 0 and p["n11"] > 0]
-        print("  pares idênticos com co-ocorrência (redundância genuína):",
-              ident or "nenhum")
+        print(f"\n[{eixo}] {e['n_turnos']} respostas, {e['n_achados']} achados")
+        never = [c for c, _, _ in e["criteria"] if e["freq"][c]["TODAS"][0] == 0]
+        print("  nunca aparecem:", never or "nenhum")
+        for nome, pairs in [("T-vs-T", e["pairs_T"]), ("V-vs-V", e["pairs_V"]),
+                            ("R-vs-R", e["pairs_R"])]:
+            top = sorted([p for p in pairs if p["n11"] >= 3
+                          and p["kappa"] is not None],
+                         key=lambda p: -p["kappa"])[:3]
+            s = "; ".join(f"{p['a']}~{p['b']} κ={p['kappa']:.2f}" for p in top)
+            print(f"  {nome} top κ: {s or 'nenhum'}")
