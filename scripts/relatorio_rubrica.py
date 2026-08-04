@@ -231,56 +231,20 @@ def conjoint_table(eixo):
             f"</thead><tbody>{''.join(rows)}</tbody></table>")
 
 
-PCOLORS = {"chatgpt": "#10a37f", "gemini": "#4285f4", "claude": "#c26b3f",
-           "deepseek": "#4d6bfe", "google_aimode": "#ea4335", "grok": "#111111",
-           "whatsapp_metaai": "#1fa855"}
-
-
-def svg_scatter():
-    pts = J["scores"]["pontos"]
-    W, H = 380, 300
-    ml, mr, mt, mb = 52, 14, 26, 42
-    pw, ph = W - ml - mr, H - mt - mb
-    panels = []
-    for k, eixo in enumerate(["voto", "genero"]):
-        ep = [p for p in pts if p["eixo"] == eixo]
-        maxx = max([p["len"] for p in ep] + [1]) * 1.08
-        maxy = max([p["ach"] for p in ep] + [1]) * 1.08
-
-        def X(v):
-            return ml + (v / maxx) * pw
-
-        def Y(v):
-            return mt + ph - (v / maxy) * ph
-        g = [f"<text x='{ml+pw/2:.0f}' y='14' text-anchor='middle' "
-             f"font-weight='700' font-size='13'>eixo {eixo}</text>",
-             f"<line x1='{ml}' y1='{mt+ph}' x2='{ml+pw}' y2='{mt+ph}' stroke='#999'/>",
-             f"<line x1='{ml}' y1='{mt}' x2='{ml}' y2='{mt+ph}' stroke='#999'/>"]
-        for fr in (0, 0.5, 1):
-            g.append(f"<text x='{X(maxx*fr):.0f}' y='{mt+ph+13:.0f}' "
-                     f"text-anchor='middle' font-size='9' fill='#666'>{int(maxx*fr)}</text>")
-            g.append(f"<text x='{ml-6}' y='{Y(maxy*fr)+3:.0f}' text-anchor='end' "
-                     f"font-size='9' fill='#666'>{int(maxy*fr)}</text>")
-        g.append(f"<text x='{ml+pw/2:.0f}' y='{mt+ph+32:.0f}' text-anchor='middle' "
-                 f"font-size='10' fill='#333'>comprimento médio da resposta (caracteres)</text>")
-        g.append(f"<text transform='translate(13,{mt+ph/2:.0f}) rotate(-90)' "
-                 f"text-anchor='middle' font-size='10' fill='#333'>nº de achados</text>")
-        for p in ep:
-            g.append(f"<circle cx='{X(p['len']):.1f}' cy='{Y(p['ach']):.1f}' r='4.5' "
-                     f"fill='{PCOLORS.get(p['platform'],'#999')}' fill-opacity='0.8' "
-                     f"stroke='#fff' stroke-width='0.6'/>")
-        panels.append(f"<g transform='translate({k*W},0)'>{''.join(g)}</g>")
-    leg = []
-    lx = 4
-    for p in PLATS:
-        nome = pl(p)
-        leg.append(f"<circle cx='{lx+6}' cy='7' r='5' fill='{PCOLORS.get(p,'#999')}'/>"
-                   f"<text x='{lx+15}' y='11' font-size='10.5'>{esc(nome)}</text>")
-        lx += 22 + len(nome) * 6.4
-    legend = f"<g transform='translate(0,{H+2})'>{''.join(leg)}</g>"
-    return (f"<svg viewBox='0 0 {W*2} {H+28}' width='100%' style='max-width:780px' "
-            f"xmlns='http://www.w3.org/2000/svg' font-family='Segoe UI, Arial, sans-serif'>"
-            f"{''.join(panels)}{legend}</svg>")
+def corr_len_ach(eixo):
+    """Correlação de Pearson entre comprimento médio e nº de achados (por eixo)."""
+    ep = [p for p in J["scores"]["pontos"] if p["eixo"] == eixo]
+    xs = [p["len"] for p in ep]
+    ys = [p["ach"] for p in ep]
+    n = len(xs)
+    if n < 2:
+        return None
+    mx = sum(xs) / n
+    my = sum(ys) / n
+    sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+    sxx = sum((x - mx) ** 2 for x in xs)
+    syy = sum((y - my) ** 2 for y in ys)
+    return (sxy / ((sxx * syy) ** 0.5)) if (sxx > 0 and syy > 0) else None
 
 
 def criticidade():
@@ -515,7 +479,8 @@ def build():
         defs_vozes=defs_vozes(),
         defs_resist=defs_resist(),
         secoes=secoes,
-        scatter=svg_scatter(),
+        r_voto=f"{corr_len_ach('voto'):.2f}".replace(".", ","),
+        r_genero=f"{corr_len_ach('genero'):.2f}".replace(".", ","),
         score_table=score_table(),
         conjoint_voto=conjoint_table("voto"),
         conjoint_genero=conjoint_table("genero"),
@@ -598,9 +563,7 @@ TEMPLATE = """<!doctype html><html lang="pt-BR"><head><meta charset="utf-8">
   <h2>3. Leitura crítica: os escores são comparáveis? Têm variabilidade?</h2>
   <p>Antes de usar estes números para comparar plataformas, três ressalvas são importantes.</p>
   <div class="box warn"><b>Comparabilidade.</b> As contagens brutas de achados não são diretamente comparáveis entre plataformas, porque o número de marcações cresce com o comprimento da resposta. Plataformas verbosas, como Grok, DeepSeek e Google AI Mode, oferecem ao juiz muito mais superfície de texto do que respostas curtas; o WhatsApp com Meta AI, por exemplo, recusa o tema do voto em cerca de 78 caracteres. Binarizar por presença na resposta, como fizemos, atenua o problema de contagem, mas o comprimento ainda infla a probabilidade de presença. Uma comparação honesta exige normalizar por resposta e, idealmente, pela extensão do texto.</div>
-  <p>O gráfico abaixo mostra, para cada conversa, o comprimento médio da resposta contra o número de achados do juiz, com uma faceta por eixo e uma cor por plataforma. Serve para verificar visualmente a associação entre extensão e número de marcações.</p>
-  {scatter}
-  <p>O padrão confirma a preocupação. As plataformas formam nuvens separadas e, dentro de cada eixo, quanto mais à direita (respostas mais longas), maior tende a ser o número de achados. O WhatsApp aparece colado na origem, porque recusa o tema em respostas muito curtas, enquanto DeepSeek, Grok e Google AI Mode ocupam a parte superior direita. Ou seja, parte da diferença bruta de achados entre plataformas reflete apenas a diferença de verbosidade, o que reforça a escolha de um escore normalizado, como a taxa de violação por tipo da próxima seção, no lugar da contagem crua.</p>
+  <p>Para quantificar essa associação, calculamos a correlação de Pearson entre o comprimento médio da resposta e o número de achados do juiz, entre as 21 conversas de cada eixo. Ela é moderada e positiva nos dois eixos: r = {r_voto} no voto e r = {r_genero} no gênero. Ou seja, respostas mais longas tendem a acumular mais achados, e parte da diferença bruta de achados entre plataformas reflete a diferença de verbosidade, não necessariamente de comportamento. A associação não é forte a ponto de explicar tudo, o comprimento responde por menos de um terço da variação no número de achados, mas é suficiente para justificar o uso de um escore normalizado, a taxa de violação por tipo da próxima seção, no lugar da contagem crua.</p>
   <div class="box"><b>Variabilidade.</b> Um item só é útil para avaliar se varia. Itens com taxa igual a 0, ou muito próxima dela, têm variância próxima de zero e não discriminam plataformas; a coluna <code>var</code> das tabelas de cobertura permite localizá-los. É o caso, no eixo de gênero, dos tipos T4 (sexualização), T5 (hostilidade), T6 (ameaça e violência física) e T7 (silenciamento), que não aparecem como violação ou aparecem em no máximo 1% das respostas: com estas personas, esses tipos simplesmente não variam e, portanto, não separam nada.</div>
   <div class="box"><b>Tamanho amostral.</b> Cada plataforma contribui com cerca de 30 respostas por eixo (3 personas por 10 turnos). Estimativas por plataforma de itens raros são muito ruidosas, pois um único achado desloca a taxa em cerca de três pontos percentuais. As conclusões robustas vêm do total por eixo (210 respostas, de 370 a 455 achados).</div>
 </section>
