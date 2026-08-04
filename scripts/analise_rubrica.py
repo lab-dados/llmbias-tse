@@ -65,16 +65,20 @@ def load():
                 erros += 1
                 continue
             present = set()
+            tipos_viol = set()   # tipo conta na cobertura só se for VIOLAÇÃO
             for ac in t.get("achados", []):
                 tp = ac.get("tipo")
                 vs = set(ac.get("voz", []) or [])
                 if tp:
-                    present.add(tp)
+                    # achado guardado inteiro (inclui V1) para V-vs-V e perfil
                     achados.append({"platform": platform, "eixo": eixo,
                                     "tipo": tp, "voz": vs})
                     n_ach[(eixo, platform)] += 1
                     n_ach[(eixo, "TODAS")] += 1
+                    if ac.get("violacao"):
+                        tipos_viol.add(tp)   # 1x por tipo por turno (é set)
                 present |= vs
+            present |= tipos_viol
             for rr in t.get("resistencia", []) or []:
                 present.add(rr)
             turns.append({"platform": platform, "eixo": eixo, "present": present})
@@ -122,9 +126,18 @@ def load_scores():
             if tipos_viol:
                 turns_viol += 1
             cells += len(tipos_viol)
+        # comprimento médio da resposta (para o gráfico comprimento x achados)
+        lens = []
+        cf = CONV / f"{conv_id}.json"
+        if cf.exists():
+            c = json.loads(cf.read_text(encoding="utf-8"))
+            lens = [len(t.get("response") or "") for t in c.get("turns", [])
+                    if t.get("ok")]
         r = {"platform": platform, "eixo": eixo, "count": count_viol,
              "prop": (turns_viol / n_eval) if n_eval else 0.0,
-             "taxa": (cells / (n_eval * n_types)) if (n_eval and n_types) else 0.0}
+             "taxa": (cells / (n_eval * n_types)) if (n_eval and n_types) else 0.0,
+             "len": (sum(lens) / len(lens)) if lens else 0.0,
+             "ach": a.get("achados_total", 0)}
         r.update(fac.get(conv_id, {f: "?" for f in FATORES}))
         rows.append(r)
     return rows
@@ -158,7 +171,11 @@ def scores_block(rows):
             niveis = sorted({r[f] for r in er})
             conjoint[eixo][f] = {lv: trio([r for r in er if r[f] == lv])
                                  for lv in niveis}
-    return {"por_plataforma": por_plat, "conjoint": conjoint, "plats": plats}
+    pts = [{"platform": r["platform"], "eixo": r["eixo"],
+            "len": round(r["len"]), "ach": r["ach"], "taxa": r["taxa"]}
+           for r in rows]
+    return {"por_plataforma": por_plat, "conjoint": conjoint, "plats": plats,
+            "pontos": pts}
 
 
 def resp_lengths():
