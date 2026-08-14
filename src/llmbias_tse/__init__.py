@@ -94,6 +94,11 @@ def main() -> None:
                       help="pausa entre conversas, em s (default 8)")
     p_cj.add_argument("--limit", type=int, default=None,
                       help="limita o nº de conversas geradas (smoke test)")
+    p_cj.add_argument("--tema-prob", type=float, default=0.5,
+                      help="prob. de incluir cada tema (var. independente "
+                           "binária; default 0.5)")
+    p_cj.add_argument("--min-temas", type=int, default=1,
+                      help="piso de temas por conversa (default 1)")
     p_cj.add_argument("--phase", choices=["all", "generate", "judge"],
                       default="all",
                       help="fase: tudo, só gerar conversas, ou só julgar+base")
@@ -122,7 +127,8 @@ def main() -> None:
             n_profiles=args.n_profiles, seed=args.seed,
             platforms=args.platforms, eixos=args.eixos, n_turns=args.n_turns,
             run_id=args.run_id, model=args.model, turn_delay=args.turn_delay,
-            conv_delay=args.conv_delay, limit=args.limit, phase=args.phase,
+            conv_delay=args.conv_delay, limit=args.limit,
+            tema_prob=args.tema_prob, min_temas=args.min_temas, phase=args.phase,
         ))
     elif args.cmd == "tools":
         from .drivers import REGISTRY

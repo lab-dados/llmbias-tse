@@ -8,9 +8,11 @@ Pipeline:
   3. Para cada plataforma × perfil × eixo, conduz uma conversa de N turnos
      (default 10) contra a plataforma sob teste no browser: o LLM as a user
      (API gemini-3.5-flash) gera cada turno reagindo à resposta real da
-     plataforma, escalando a posição não conforme. O Gemini roda em conversa
-     momentânea (sem memória); as demais plataformas abrem um chat novo a cada
-     conversa.
+     plataforma, escalando a posição não conforme. Os TEMAS a abordar (cada um
+     ligado a um item da rubrica) entram como variáveis independentes binárias
+     sorteadas por perfil × eixo (ver `temas.py`); uma conversa cobre o
+     subconjunto de temas sorteados. O Gemini roda em conversa momentânea (sem
+     memória); as demais plataformas abrem um chat novo a cada conversa.
   4. Aplica o LLM as a judge (v4.0) a cada conversa: extrai achados POR
      RESPOSTA (tipo × voz) e agrega contagens descritivas (sem escore somado).
   5. Escreve a base final (uma linha por conversa) em dataset.jsonl/csv/parquet.
@@ -36,6 +38,7 @@ from .drivers import REGISTRY
 from .judge import annotate
 from .rubrics import RUBRICS, RubricGrid, get_rubric
 from .storage import RunStore, _now_iso
+from .temas import TEMAS, incluidos, sample_temas
 from .user_agent import UserAgent
 
 # Plataforma -> (driver no REGISTRY, rótulo de modo de isolamento).
@@ -73,6 +76,10 @@ DEEPSEEK_SEM_MOMENTANEA = True
 DEFAULT_PLATFORMS = ["gemini", "chatgpt", "claude", "deepseek", "grok"]
 DEFAULT_EIXOS = list(RUBRICS.keys())  # ["voto", "genero"]
 DEFAULT_N_TURNS = 10
+# Probabilidade de incluir cada tema (variável independente binária) e piso de
+# temas por conversa (uma conversa sem tema nenhum não testaria nada).
+DEFAULT_TEMA_PROB = 0.5
+DEFAULT_MIN_TEMAS = 1
 
 
 # --------------------------------------------------------------------------
@@ -128,10 +135,19 @@ def _conv_done(store: RunStore, conv_id: str, n_turns: int) -> bool:
 
 def _run_one_conversation(page, store, driver, platform, mode, profile: Profile,
                           eixo_key: str, seed_data, model, n_turns: int,
-                          turn_delay: float) -> dict:
+                          turn_delay: float, seed: int, tema_prob: float,
+                          min_temas: int) -> dict:
     eixo = EIXOS[eixo_key]
     conv_id = f"{platform}_{profile.id}_{eixo_key}"
-    print(f"\n[conjoint] === {conv_id} | {profile.fatores()} ===")
+    # Vetor binário de inclusão de temas (variáveis independentes), sorteado por
+    # (perfil, eixo) e independente da plataforma -> mesmas provocações em todas
+    # as plataformas para um dado perfil × eixo (comparabilidade).
+    tema_flags = sample_temas(eixo_key, profile.id, seed=seed, prob=tema_prob,
+                              min_temas=min_temas)
+    temas_in = incluidos(tema_flags)
+    temas_obj = [t for t in TEMAS.get(eixo_key, ()) if tema_flags.get(t.codigo)]
+    print(f"\n[conjoint] === {conv_id} | {profile.fatores()} | "
+          f"temas={temas_in} ===")
     record = {
         "run_id": store.run_id,
         "conversation_id": conv_id,
@@ -141,6 +157,8 @@ def _run_one_conversation(page, store, driver, platform, mode, profile: Profile,
         "profile": asdict(profile),
         "eixo": eixo_key,
         "tema": eixo.tema,
+        "temas_flags": tema_flags,
+        "temas_incluidos": temas_in,
         "persona": persona_presentation(profile),
         "n_turns": n_turns,
         "started_at": _now_iso(),
@@ -160,7 +178,8 @@ def _run_one_conversation(page, store, driver, platform, mode, profile: Profile,
         store.save_conversation(record)
         return record
 
-    ua = UserAgent(profile, eixo, seed_data, n_turns=n_turns, model=model)
+    ua = UserAgent(profile, eixo, seed_data, temas=temas_obj, n_turns=n_turns,
+                   model=model)
     prev_response: str | None = None
     for ti in range(1, n_turns + 1):
         t0 = _now_iso()
@@ -210,6 +229,7 @@ def _run_one_conversation(page, store, driver, platform, mode, profile: Profile,
 
 def generate_conversations(store: RunStore, profiles, platforms, eixos,
                            seed_data, model, n_turns, turn_delay, conv_delay,
+                           seed: int, tema_prob: float, min_temas: int,
                            limit=None) -> None:
     planned = [(pl, p, e)
                for pl in platforms for p in profiles for e in eixos]
@@ -258,7 +278,8 @@ def generate_conversations(store: RunStore, profiles, platforms, eixos,
                 if i:
                     time.sleep(conv_delay)
                 _run_one_conversation(page, store, drivers[pl], pl, modes[pl],
-                                      p, e, seed_data, model, n_turns, turn_delay)
+                                      p, e, seed_data, model, n_turns, turn_delay,
+                                      seed, tema_prob, min_temas)
         finally:
             # Não fecha a aba do WhatsApp (preserva a sessão para retomadas).
             if page is not wa_page:
@@ -317,13 +338,26 @@ def build_dataset(store: RunStore, rubrics: dict[str, RubricGrid]) -> Path:
         ap = anot_dir / f"{conv_id}.json"
         anot = json.loads(ap.read_text(encoding="utf-8")) if ap.exists() else None
         prof = rec["profile"]
-        rows.append({
+        # temas como variáveis independentes binárias (tema_Tx = incluído?) e a
+        # variável dependente binária violou_Tx (algum turno violou aquele tipo);
+        # os códigos T1..Tn são LOCAIS ao eixo (mesma convenção de por_tipo).
+        tema_flags = rec.get("temas_flags") or {}
+        por_tipo = (anot or {}).get("por_tipo") or {}
+        tema_cols: dict[str, object] = {}
+        for cod, incl in tema_flags.items():
+            tema_cols[f"tema_{cod}"] = int(bool(incl))
+            tema_cols[f"violou_{cod}"] = (
+                int(por_tipo.get(cod, 0) > 0) if anot else None
+            )
+        row = {
             "id": conv_id,
             "run_id": rec["run_id"],
             "platform": rec["platform"],
             "mode": rec["mode"],
             "eixo": rec["eixo"],
             "tema": rec["tema"],
+            "temas_incluidos": "+".join(rec.get("temas_incluidos") or []),
+            "n_temas_incluidos": sum(1 for v in tema_flags.values() if v),
             # fatores do perfil (uma coluna cada)
             "politica": prof["politica"],
             "genero": prof["genero"],
@@ -332,6 +366,10 @@ def build_dataset(store: RunStore, rubrics: dict[str, RubricGrid]) -> Path:
             "estilo_conversa": prof["estilo_conversa"],
             "estilo_escrita": prof["estilo_escrita"],
             "perfil_id": prof["id"],
+            # variável dependente binária no nível da conversa
+            "violou": (int(anot["achados_violacao"] > 0) if anot else None),
+            # colunas por tema (independentes) e por violação de tema (dependentes)
+            **tema_cols,
             # agregados descritivos da anotação (sem escore somado)
             "n_turnos_avaliados": anot["n_turnos_avaliados"] if anot else None,
             "achados_total": anot["achados_total"] if anot else None,
@@ -347,9 +385,11 @@ def build_dataset(store: RunStore, rubrics: dict[str, RubricGrid]) -> Path:
                                       ensure_ascii=False),
             "achados": json.dumps(anot["turnos"] if anot else [],
                                   ensure_ascii=False),
+            "temas_flags": json.dumps(tema_flags, ensure_ascii=False),
             "conversa": json.dumps(rec["turns"], ensure_ascii=False),
             "persona": rec["persona"],
-        })
+        }
+        rows.append(row)
     df = pd.DataFrame(rows)
     jsonl = store.dir / "dataset.jsonl"
     with jsonl.open("w", encoding="utf-8") as f:
@@ -380,6 +420,7 @@ def run(n_profiles: int = 3, seed: int = 2026,
         run_id: str | None = None, model: str | None = None,
         n_turns: int = DEFAULT_N_TURNS, turn_delay: float = 3.0,
         conv_delay: float = 8.0, limit: int | None = None,
+        tema_prob: float = DEFAULT_TEMA_PROB, min_temas: int = DEFAULT_MIN_TEMAS,
         phase: str = "all") -> int:
     platforms = platforms or list(DEFAULT_PLATFORMS)
     eixos = eixos or list(DEFAULT_EIXOS)
@@ -399,6 +440,7 @@ def run(n_profiles: int = 3, seed: int = 2026,
     store = RunStore(run_id)
     print(f"[conjoint] run_id={store.run_id} | plataformas={platforms} | "
           f"eixos={eixos} | perfis={n_profiles} | turnos={n_turns} | "
+          f"tema_prob={tema_prob} min_temas={min_temas} | "
           f"modelo juiz/usuário={model}")
     seed_data = load_seed()
     profiles = _load_or_sample_profiles(store, n_profiles, seed)
@@ -407,7 +449,7 @@ def run(n_profiles: int = 3, seed: int = 2026,
     if phase in ("all", "generate"):
         generate_conversations(store, profiles, platforms, eixos, seed_data,
                                model, n_turns, turn_delay, conv_delay,
-                               limit=limit)
+                               seed, tema_prob, min_temas, limit=limit)
     if phase in ("all", "judge"):
         judge_conversations(store, rubrics, model)
         build_dataset(store, rubrics)
