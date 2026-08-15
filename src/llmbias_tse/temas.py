@@ -238,3 +238,82 @@ def sample_temas(eixo_key: str, profile_id: str, *, seed: int = 2026,
 def incluidos(flags: dict[str, bool]) -> list[str]:
     """Lista de códigos incluídos (True), em ordem canônica das chaves."""
     return [c for c, v in flags.items() if v]
+
+
+# --------------------------------------------------------------------------
+# Plano de coleta balanceado (matriz de desenho pré-montada)
+# --------------------------------------------------------------------------
+
+def _rng_for(*parts: object) -> random.Random:
+    key = "|".join(str(p) for p in parts)
+    h = int(hashlib.sha256(key.encode("utf-8")).hexdigest(), 16) % (2 ** 32)
+    return random.Random(h)
+
+
+def build_tema_matrix(eixo_key: str, profile_ids: list[str], *,
+                      seed: int = 2026, prob: float = 0.5,
+                      min_temas: int = 1) -> dict[str, dict[str, bool]]:
+    """Matriz BALANCEADA de inclusão de temas para um eixo (variáveis
+    independentes), montada de uma vez para todos os perfis.
+
+    Propriedades (o que traz conforto à equipe):
+      - cada tema é incluído em ~round(prob·n) perfis, no MÍNIMO 1 (cobertura
+        garantida): dá para dizer "cada tema foi testado N vezes";
+      - o nº de temas por conversa (soma das linhas) fica o mais uniforme
+        possível, evitando conversas sobrecarregadas e outras vazias;
+      - respeita o piso `min_temas` por conversa;
+      - determinística em (seed, eixo) e INDEPENDENTE da plataforma — a mesma
+        matriz vale para todas as plataformas (mesmo rol → comparabilidade).
+
+    Continua um desenho válido para o conjoint: o balanceamento por coluna
+    melhora (não piora) a ortogonalidade em relação ao sorteio i.i.d.
+
+    Retorna {profile_id: {codigo_do_tipo: incluído?}} na ordem dos perfis.
+    """
+    codigos = [t.codigo for t in temas_do_eixo(eixo_key)]
+    n = len(profile_ids)
+    if n == 0:
+        return {}
+    rng = _rng_for(seed, eixo_key)
+
+    # alvo de inclusões por tema (coluna): ~prob·n, com piso 1 e teto n.
+    col_target = {c: min(n, max(1, round(prob * n))) for c in codigos}
+
+    M = [{c: False for c in codigos} for _ in range(n)]
+    row_sum = [0] * n
+
+    # preenche coluna a coluna (ordem embaralhada), sempre nas linhas de menor
+    # carga atual -> linhas ficam equilibradas; colunas batem o alvo exato.
+    order = codigos[:]
+    rng.shuffle(order)
+    for c in order:
+        t = col_target[c]
+        rows = sorted(range(n), key=lambda r: (row_sum[r], rng.random()))[:t]
+        for r in rows:
+            M[r][c] = True
+            row_sum[r] += 1
+
+    # piso de temas por conversa (raramente aciona com prob=0.5): completa a
+    # linha com os temas de menor carga de coluna.
+    for r in range(n):
+        while row_sum[r] < min_temas:
+            cands = [c for c in codigos if not M[r][c]]
+            if not cands:
+                break
+            colsum = {c: sum(M[i][c] for i in range(n)) for c in cands}
+            c = min(cands, key=lambda x: (colsum[x], rng.random()))
+            M[r][c] = True
+            row_sum[r] += 1
+
+    return {pid: M[i] for i, pid in enumerate(profile_ids)}
+
+
+def build_tema_plan(eixos: list[str], profile_ids: list[str], *,
+                    seed: int = 2026, prob: float = 0.5,
+                    min_temas: int = 1) -> dict[str, dict[str, dict[str, bool]]]:
+    """Plano de temas para vários eixos: {eixo: {profile_id: flags}}."""
+    return {
+        e: build_tema_matrix(e, profile_ids, seed=seed, prob=prob,
+                             min_temas=min_temas)
+        for e in eixos
+    }

@@ -38,7 +38,7 @@ from .drivers import REGISTRY
 from .judge import annotate
 from .rubrics import RUBRICS, RubricGrid, get_rubric
 from .storage import RunStore, _now_iso
-from .temas import TEMAS, incluidos, sample_temas
+from .temas import TEMAS, build_tema_plan, incluidos, temas_do_eixo
 from .user_agent import UserAgent
 
 # Plataforma -> (driver no REGISTRY, rótulo de modo de isolamento).
@@ -113,6 +113,66 @@ def _snapshot_rubrics(store: RunStore, eixos: list[str]) -> dict[str, RubricGrid
     return rubrics
 
 
+def _load_or_build_plan(store: RunStore, profiles, platforms, eixos,
+                        seed: int, tema_prob: float, min_temas: int
+                        ) -> dict[str, dict[str, dict[str, bool]]]:
+    """Monta (ou retoma) o PLANO DE COLETA balanceado ANTES de rodar.
+
+    O plano fixa, para cada eixo × perfil, o vetor binário de temas — o mesmo
+    para todas as plataformas (mesmo rol → comparabilidade). É persistido em
+    `plano_coleta.json` (fonte da verdade, retomável) e `plano_coleta.csv`
+    (inspeção/pré-registro: uma linha por conversa planejada). Retorna a matriz
+    {eixo: {profile_id: flags}}.
+    """
+    path = store.dir / "plano_coleta.json"
+    if path.exists():
+        raw = json.loads(path.read_text(encoding="utf-8"))
+        print(f"[conjoint] reusando plano de coleta de {path}")
+        return raw["matriz"]
+
+    pids = [p.id for p in profiles]
+    matriz = build_tema_plan(eixos, pids, seed=seed, prob=tema_prob,
+                             min_temas=min_temas)
+    # roster enumerado (plataforma × perfil × eixo) para inspeção
+    conversas = []
+    for pl in platforms:
+        for p in profiles:
+            for e in eixos:
+                flags = matriz[e][p.id]
+                conversas.append({
+                    "conversation_id": f"{pl}_{p.id}_{e}",
+                    "platform": pl, "perfil_id": p.id, "eixo": e,
+                    "n_temas": sum(1 for v in flags.values() if v),
+                    "temas_incluidos": incluidos(flags),
+                })
+    _save_json(path, {
+        "seed": seed, "tema_prob": tema_prob, "min_temas": min_temas,
+        "platforms": list(platforms), "eixos": list(eixos),
+        "matriz": matriz, "conversas": conversas,
+    })
+    # CSV inspecionável: uma linha por conversa planejada, com tema_Tx (0/1)
+    csv_rows = []
+    for c in conversas:
+        flags = matriz[c["eixo"]][c["perfil_id"]]
+        csv_rows.append({
+            "conversation_id": c["conversation_id"], "platform": c["platform"],
+            "perfil_id": c["perfil_id"], "eixo": c["eixo"],
+            "n_temas": c["n_temas"],
+            "temas_incluidos": "+".join(c["temas_incluidos"]),
+            **{f"tema_{cod}": int(bool(v)) for cod, v in flags.items()},
+        })
+    pd.DataFrame(csv_rows).to_csv(store.dir / "plano_coleta.csv", index=False,
+                                  encoding="utf-8-sig", sep=";")
+    print(f"[conjoint] plano de coleta montado: {len(conversas)} conversas "
+          f"planejadas -> {path}")
+    for e in eixos:
+        cov = {t.codigo: sum(1 for pid in pids if matriz[e][pid][t.codigo])
+               for t in temas_do_eixo(e)}
+        print(f"[conjoint]   cobertura de temas ({e}, em {len(pids)} perfis): "
+              f"{cov}")
+    return matriz
+
+
 def _conv_path(store: RunStore, conv_id: str) -> Path:
     return store.dir / "conversations" / f"{conv_id}.json"
 
@@ -135,15 +195,13 @@ def _conv_done(store: RunStore, conv_id: str, n_turns: int) -> bool:
 
 def _run_one_conversation(page, store, driver, platform, mode, profile: Profile,
                           eixo_key: str, seed_data, model, n_turns: int,
-                          turn_delay: float, seed: int, tema_prob: float,
-                          min_temas: int) -> dict:
+                          turn_delay: float, plan_matriz) -> dict:
     eixo = EIXOS[eixo_key]
     conv_id = f"{platform}_{profile.id}_{eixo_key}"
-    # Vetor binário de inclusão de temas (variáveis independentes), sorteado por
-    # (perfil, eixo) e independente da plataforma -> mesmas provocações em todas
-    # as plataformas para um dado perfil × eixo (comparabilidade).
-    tema_flags = sample_temas(eixo_key, profile.id, seed=seed, prob=tema_prob,
-                              min_temas=min_temas)
+    # Vetor binário de inclusão de temas (variáveis independentes) lido do PLANO
+    # DE COLETA pré-montado — o mesmo para todas as plataformas num dado
+    # perfil × eixo (mesmo rol → comparabilidade).
+    tema_flags = plan_matriz[eixo_key][profile.id]
     temas_in = incluidos(tema_flags)
     temas_obj = [t for t in TEMAS.get(eixo_key, ()) if tema_flags.get(t.codigo)]
     print(f"\n[conjoint] === {conv_id} | {profile.fatores()} | "
@@ -229,8 +287,7 @@ def _run_one_conversation(page, store, driver, platform, mode, profile: Profile,
 
 def generate_conversations(store: RunStore, profiles, platforms, eixos,
                            seed_data, model, n_turns, turn_delay, conv_delay,
-                           seed: int, tema_prob: float, min_temas: int,
-                           limit=None) -> None:
+                           plan_matriz, limit=None) -> None:
     planned = [(pl, p, e)
                for pl in platforms for p in profiles for e in eixos]
     todo = [(pl, p, e) for (pl, p, e) in planned
@@ -279,7 +336,7 @@ def generate_conversations(store: RunStore, profiles, platforms, eixos,
                     time.sleep(conv_delay)
                 _run_one_conversation(page, store, drivers[pl], pl, modes[pl],
                                       p, e, seed_data, model, n_turns, turn_delay,
-                                      seed, tema_prob, min_temas)
+                                      plan_matriz)
         finally:
             # Não fecha a aba do WhatsApp (preserva a sessão para retomadas).
             if page is not wa_page:
@@ -445,11 +502,15 @@ def run(n_profiles: int = 3, seed: int = 2026,
     seed_data = load_seed()
     profiles = _load_or_sample_profiles(store, n_profiles, seed)
     rubrics = _snapshot_rubrics(store, eixos)
+    # Plano de coleta (matriz de temas por eixo × perfil) montado ANTES de rodar,
+    # inspecionável e retomável; o mesmo rol para todas as plataformas.
+    plan_matriz = _load_or_build_plan(store, profiles, platforms, eixos,
+                                      seed, tema_prob, min_temas)
 
     if phase in ("all", "generate"):
         generate_conversations(store, profiles, platforms, eixos, seed_data,
                                model, n_turns, turn_delay, conv_delay,
-                               seed, tema_prob, min_temas, limit=limit)
+                               plan_matriz, limit=limit)
     if phase in ("all", "judge"):
         judge_conversations(store, rubrics, model)
         build_dataset(store, rubrics)
