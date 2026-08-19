@@ -30,6 +30,7 @@ import pandas as pd
 from patchright.sync_api import sync_playwright
 
 from . import browser, capture, llm
+from . import instrument
 from .axes import EIXOS
 from .conjoint import Profile, load_seed, persona_presentation, sample_profiles
 from .drivers import REGISTRY
@@ -72,7 +73,14 @@ DEEPSEEK_SEM_MOMENTANEA = True
 
 DEFAULT_PLATFORMS = ["gemini", "chatgpt", "claude", "deepseek", "grok"]
 DEFAULT_EIXOS = list(RUBRICS.keys())  # ["voto", "genero"]
-DEFAULT_N_TURNS = 10
+# None = cada eixo decide (Eixo.n_turns): `genero` pede 7 turnos desde a v10 do
+# instrumento, os demais seguem os 10 de escalada. Passar --n-turns sobrepoe
+# para TODOS os eixos (util so para smoke test).
+DEFAULT_N_TURNS = None
+
+
+def _n_turns_for(eixo_key: str, override: int | None) -> int:
+    return override if override else EIXOS[eixo_key].n_turns
 
 
 # --------------------------------------------------------------------------
@@ -127,9 +135,10 @@ def _conv_done(store: RunStore, conv_id: str, n_turns: int) -> bool:
 # --------------------------------------------------------------------------
 
 def _run_one_conversation(page, store, driver, platform, mode, profile: Profile,
-                          eixo_key: str, seed_data, model, n_turns: int,
-                          turn_delay: float) -> dict:
+                          eixo_key: str, seed_data, model, n_turns: int | None,
+                          turn_delay: float, roteiro=None) -> dict:
     eixo = EIXOS[eixo_key]
+    n_turns = _n_turns_for(eixo_key, n_turns)
     conv_id = f"{platform}_{profile.id}_{eixo_key}"
     print(f"\n[conjoint] === {conv_id} | {profile.fatores()} ===")
     record = {
@@ -160,7 +169,21 @@ def _run_one_conversation(page, store, driver, platform, mode, profile: Profile,
         store.save_conversation(record)
         return record
 
-    ua = UserAgent(profile, eixo, seed_data, n_turns=n_turns, model=model)
+    ua = UserAgent(profile, eixo, seed_data, n_turns=n_turns, model=model,
+                   roteiro=roteiro)
+    if roteiro:
+        record["roteiro"] = [
+            {"turno": t.ordem, "papel": t.papel,
+             "relato": t.relato.key if t.relato else None,
+             "pedido": t.pedido.key if t.pedido else None,
+             "exemplares": [{"alt": a, "rotulo": r, "item": i}
+                            for a, r, i in t.exemplares],
+             "dupla": t.dupla.key if t.dupla else None,
+             "combinado": t.combinado, "dominio_objeto": t.dominio_objeto}
+            for t in roteiro
+        ]
+        record["cobertura_temas"] = instrument.resumo_cobertura(
+            eixo.instrumento, roteiro)
     prev_response: str | None = None
     for ti in range(1, n_turns + 1):
         t0 = _now_iso()
@@ -210,11 +233,12 @@ def _run_one_conversation(page, store, driver, platform, mode, profile: Profile,
 
 def generate_conversations(store: RunStore, profiles, platforms, eixos,
                            seed_data, model, n_turns, turn_delay, conv_delay,
-                           limit=None) -> None:
+                           limit=None, seed: int = 2026) -> None:
     planned = [(pl, p, e)
                for pl in platforms for p in profiles for e in eixos]
     todo = [(pl, p, e) for (pl, p, e) in planned
-            if not _conv_done(store, f"{pl}_{p.id}_{e}", n_turns)]
+            if not _conv_done(store, f"{pl}_{p.id}_{e}",
+                              _n_turns_for(e, n_turns))]
     if limit:
         todo = todo[:limit]
     print(f"[conjoint] conversas planejadas: {len(planned)} | "
@@ -223,6 +247,28 @@ def generate_conversations(store: RunStore, profiles, platforms, eixos,
     if not todo:
         print("[conjoint] nada a gerar (todas já concluídas).")
         return
+
+    # Eixos com instrumento: planeja a RODADA INTEIRA de uma vez. A nao
+    # repeticao de exemplares e de duplas vale ENTRE conversas do mesmo tema,
+    # entao os perfis precisam de memoria compartilhada. O roteiro e funcao do
+    # perfil, nao da plataforma: as N plataformas recebem o mesmo estimulo.
+    roteiros: dict[str, dict[str, tuple]] = {}
+    for e in eixos:
+        if not EIXOS[e].instrumento:
+            continue
+        rot, avisos = instrument.plan_round(
+            EIXOS[e].instrumento, [p.id for p in profiles], seed=seed,
+            n_turns=_n_turns_for(e, n_turns))
+        roteiros[e] = rot
+        _save_json(store.dir / f"roteiros_{e}.json",
+                   {"avisos": avisos,
+                    "cobertura": {
+                        pid: instrument.resumo_cobertura(EIXOS[e].instrumento, r)
+                        for pid, r in rot.items()}})
+        print(f"[conjoint] roteiros do eixo {e}: {len(rot)} perfis, "
+              f"{len(avisos)} aviso(s)")
+        for a in avisos:
+            print(f"[conjoint]   aviso: {a}")
 
     drivers = {pl: REGISTRY[PLATFORM_DRIVERS[pl][0]]() for pl in platforms}
     modes = {pl: PLATFORM_DRIVERS[pl][1] for pl in platforms}
@@ -258,7 +304,9 @@ def generate_conversations(store: RunStore, profiles, platforms, eixos,
                 if i:
                     time.sleep(conv_delay)
                 _run_one_conversation(page, store, drivers[pl], pl, modes[pl],
-                                      p, e, seed_data, model, n_turns, turn_delay)
+                                      p, e, seed_data, model, n_turns,
+                                      turn_delay,
+                                      roteiro=roteiros.get(e, {}).get(p.id))
         finally:
             # Não fecha a aba do WhatsApp (preserva a sessão para retomadas).
             if page is not wa_page:
@@ -378,7 +426,7 @@ def build_dataset(store: RunStore, rubrics: dict[str, RubricGrid]) -> Path:
 def run(n_profiles: int = 3, seed: int = 2026,
         platforms: list[str] | None = None, eixos: list[str] | None = None,
         run_id: str | None = None, model: str | None = None,
-        n_turns: int = DEFAULT_N_TURNS, turn_delay: float = 3.0,
+        n_turns: int | None = DEFAULT_N_TURNS, turn_delay: float = 3.0,
         conv_delay: float = 8.0, limit: int | None = None,
         phase: str = "all") -> int:
     platforms = platforms or list(DEFAULT_PLATFORMS)
@@ -398,7 +446,8 @@ def run(n_profiles: int = 3, seed: int = 2026,
 
     store = RunStore(run_id)
     print(f"[conjoint] run_id={store.run_id} | plataformas={platforms} | "
-          f"eixos={eixos} | perfis={n_profiles} | turnos={n_turns} | "
+          f"eixos={eixos} | perfis={n_profiles} | "
+          f"turnos={ {e: _n_turns_for(e, n_turns) for e in eixos} } | "
           f"modelo juiz/usuário={model}")
     seed_data = load_seed()
     profiles = _load_or_sample_profiles(store, n_profiles, seed)
@@ -407,7 +456,7 @@ def run(n_profiles: int = 3, seed: int = 2026,
     if phase in ("all", "generate"):
         generate_conversations(store, profiles, platforms, eixos, seed_data,
                                model, n_turns, turn_delay, conv_delay,
-                               limit=limit)
+                               limit=limit, seed=seed)
     if phase in ("all", "judge"):
         judge_conversations(store, rubrics, model)
         build_dataset(store, rubrics)

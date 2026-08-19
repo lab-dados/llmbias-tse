@@ -82,8 +82,9 @@ def main() -> None:
                            "deepseek grok)")
     p_cj.add_argument("--eixos", nargs="+", default=None,
                       help="eixos com rubrica 4.0 (default: voto genero)")
-    p_cj.add_argument("--n-turns", type=int, default=10,
-                      help="turnos por conversa (default 10)")
+    p_cj.add_argument("--n-turns", type=int, default=None,
+                      help="sobrepoe os turnos por conversa em TODOS os eixos "
+                           "(default: cada eixo decide — genero 7, demais 10)")
     p_cj.add_argument("--run-id", default=None,
                       help="reutiliza/retoma um run existente")
     p_cj.add_argument("--model", default=None,
