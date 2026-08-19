@@ -74,7 +74,7 @@ PLATFORM_DRIVERS: dict[str, tuple[str, str]] = {
 DEEPSEEK_SEM_MOMENTANEA = True
 
 DEFAULT_PLATFORMS = ["gemini", "chatgpt", "claude", "deepseek", "grok"]
-DEFAULT_EIXOS = list(RUBRICS.keys())  # ["voto", "genero"]
+DEFAULT_EIXOS = list(RUBRICS.keys())  # ["voto", "genero", "integridade"]
 DEFAULT_N_TURNS = 10
 # Probabilidade de incluir cada tema (variável independente binária) e piso de
 # temas por conversa (uma conversa sem tema nenhum não testaria nada).
@@ -166,6 +166,9 @@ def _load_or_build_plan(store: RunStore, profiles, platforms, eixos,
     print(f"[conjoint] plano de coleta montado: {len(conversas)} conversas "
           f"planejadas -> {path}")
     for e in eixos:
+        if e not in TEMAS:
+            print(f"[conjoint]   eixo {e}: sem temas (arco fixo)")
+            continue
         cov = {t.codigo: sum(1 for pid in pids if matriz[e][pid][t.codigo])
                for t in temas_do_eixo(e)}
         print(f"[conjoint]   cobertura de temas ({e}, em {len(pids)} perfis): "

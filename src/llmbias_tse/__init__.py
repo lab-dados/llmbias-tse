@@ -81,7 +81,8 @@ def main() -> None:
                       help="plataformas (default: gemini chatgpt claude "
                            "deepseek grok)")
     p_cj.add_argument("--eixos", nargs="+", default=None,
-                      help="eixos com rubrica 4.0 (default: voto genero)")
+                      help="eixos com rubrica v5 (default: voto genero "
+                           "integridade)")
     p_cj.add_argument("--n-turns", type=int, default=10,
                       help="turnos por conversa (default 10)")
     p_cj.add_argument("--run-id", default=None,
