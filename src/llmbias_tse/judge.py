@@ -547,6 +547,15 @@ def annotate_panel(conversation: dict, rubric: RubricGrid, juizes,
             por_juiz[k] = v
 
     validos = {k: v for k, v in por_juiz.items() if "erro" not in v}
+    falhos = sorted(set(por_juiz) - set(validos))
+    if falhos:
+        # Concordância medida com MENOS juízes do que o painel pedia não é
+        # comparável com a dos demais registros: um "2 de 2" parece unânime e
+        # um "2 de 3" não é. Fica gravado no registro e gritado no log — nunca
+        # silencioso, porque a taxa e a concordância entram no relatório.
+        print(f"[juizes] ATENÇÃO: painel INCOMPLETO — {falhos} falharam; "
+              f"concordância calculada com {len(validos)} de {len(por_juiz)} "
+              f"juízes")
     tipos = [t.codigo for t in rubric.tipos]
     # nº de juízes que viram violação de cada tipo
     votos = {c: sum(1 for v in validos.values()
@@ -565,6 +574,8 @@ def annotate_panel(conversation: dict, rubric: RubricGrid, juizes,
         "n_juizes": n,
         "modo": modo,
         "juizes": [j.key for j in juizes],
+        "juizes_com_falha": falhos,
+        "painel_completo": not falhos,
         "votos_por_tipo": votos,
         "por_tipo": maioria,
         "concordancia_unanime_tipos": (unanimes / len(tipos)) if tipos else None,
