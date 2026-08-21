@@ -467,7 +467,8 @@ def generate_conversations(store: RunStore, profiles, platforms, eixos,
 
 def export_plano_completo(store: RunStore, profiles, platforms, eixos,
                           plan_roteiros, plan_temas, seed_data, model,
-                          n_turns: int | None) -> Path:
+                          n_turns: int | None,
+                          com_primeira_mensagem: bool = True) -> Path:
     """Exporta a AMOSTRA COMPLETA para inspeção antes de rodar: uma linha por
     (perfil × eixo), com os fatores do perfil, os temas sorteados, o roteiro
     resolvido (fichas de todos os turnos), o **system prompt** do LLM-usuário e
@@ -489,10 +490,15 @@ def export_plano_completo(store: RunStore, profiles, platforms, eixos,
             n_t = len(roteiro) or (n_turns or (inst.n_turns if inst else 10))
             ua = UserAgent(p, eixo, seed_data, instrumento=inst,
                            roteiro=roteiro, n_turns=n_t, model=model)
-            try:
-                primeira = ua.next_turn(None)
-            except Exception as e:  # noqa: BLE001
-                primeira = f"(erro ao gerar exemplo: {e!r})"
+            # A 1ª mensagem custa uma chamada de API por linha; para a planilha
+            # de pré-registro ela é ilustrativa, então é opcional.
+            if com_primeira_mensagem:
+                try:
+                    primeira = ua.next_turn(None)
+                except Exception as e:  # noqa: BLE001
+                    primeira = f"(erro ao gerar exemplo: {e!r})"
+            else:
+                primeira = ""
             fichas = "\n\n".join(
                 instrument.ficha(inst, t) for t in roteiro
             ) if (inst and roteiro) else ""
@@ -514,7 +520,8 @@ def export_plano_completo(store: RunStore, profiles, platforms, eixos,
             })
             print(f"[conjoint] plano: {p.id} × {eixo_key} "
                   f"({sum(1 for v in flags.values() if v)} temas, {n_t} turnos)"
-                  f" — 1ª msg gerada ({len(primeira)} chars)")
+                  + (f" — 1ª msg gerada ({len(primeira)} chars)"
+                     if com_primeira_mensagem else ""))
     df = pd.DataFrame(rows)
     out = store.dir / "plano_coleta_completo.xlsx"
     try:
@@ -684,6 +691,7 @@ def run(n_profiles: int = 3, seed: int = 2026,
         per_platform_limit: int | None = None,
         tema_prob: float = DEFAULT_TEMA_PROB, min_temas: int = DEFAULT_MIN_TEMAS,
         juizes_keys: list[str] | None = None, judge_mode: str = "turno",
+        com_primeira_mensagem: bool = True,
         phase: str = "all") -> int:
     platforms = platforms or list(DEFAULT_PLATFORMS)
     eixos = eixos or list(DEFAULT_EIXOS)
@@ -724,7 +732,8 @@ def run(n_profiles: int = 3, seed: int = 2026,
 
     if phase == "plan":
         export_plano_completo(store, profiles, platforms, eixos, plan_roteiros,
-                              plan_temas, seed_data, model, n_turns)
+                              plan_temas, seed_data, model, n_turns,
+                              com_primeira_mensagem=com_primeira_mensagem)
         print(f"\n[conjoint] Plano exportado. Rode o pré-teste com: "
               f"conjoint --run-id {store.run_id} --limit <K> "
               f"[--platforms ...]")

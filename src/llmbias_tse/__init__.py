@@ -115,6 +115,9 @@ def main() -> None:
                       help="juiz por turno (default, reenvia a conversa a cada "
                            "turno) ou 'conversa' (1 chamada por conversa, "
                            "achados marcados por turno; ~6x mais barato)")
+    p_cj.add_argument("--sem-primeira-mensagem", action="store_true",
+                      help="na fase 'plan', não gera o exemplo de 1ª mensagem "
+                           "(evita uma chamada de API por linha da planilha)")
     p_cj.add_argument("--phase", choices=["all", "generate", "judge", "plan"],
                       default="all",
                       help="fase: tudo; só gerar; só julgar+base; ou 'plan' "
@@ -149,6 +152,7 @@ def main() -> None:
             per_platform_limit=args.per_platform_limit,
             tema_prob=args.tema_prob, min_temas=args.min_temas,
             juizes_keys=args.juizes, judge_mode=args.judge_mode,
+            com_primeira_mensagem=not args.sem_primeira_mensagem,
             phase=args.phase,
         ))
     elif args.cmd == "tools":
