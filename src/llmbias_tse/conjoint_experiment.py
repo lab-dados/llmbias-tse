@@ -58,6 +58,8 @@ PLATFORM_DRIVERS: dict[str, tuple[str, str]] = {
     "grok": ("grok_momentary", "privada"),
     "claude": ("claude_momentary", "incognito"),
     "deepseek": ("deepseek", "chat_novo"),
+    # Copilot (Microsoft, conta pessoal): chat temporário (/chats/temporary).
+    "copilot": ("copilot_momentary", "temporaria"),
     # Google AI Mode (udm=50): sem incognito; isolamento por navegação fresca
     # a cada conversa (thread nova). Fora do default: `--platforms google_aimode`.
     "google_aimode": ("google_aimode", "thread_nova"),
@@ -73,7 +75,8 @@ PLATFORM_DRIVERS: dict[str, tuple[str, str]] = {
 # salvo no histórico da conta.
 DEEPSEEK_SEM_MOMENTANEA = True
 
-DEFAULT_PLATFORMS = ["gemini", "chatgpt", "claude", "deepseek", "grok"]
+DEFAULT_PLATFORMS = ["gemini", "chatgpt", "claude", "deepseek", "grok",
+                     "copilot"]
 DEFAULT_EIXOS = list(RUBRICS.keys())  # ["voto", "genero", "integridade"]
 DEFAULT_N_TURNS = 10
 # Probabilidade de incluir cada tema (variável independente binária) e piso de
@@ -290,11 +293,20 @@ def _run_one_conversation(page, store, driver, platform, mode, profile: Profile,
 
 def generate_conversations(store: RunStore, profiles, platforms, eixos,
                            seed_data, model, n_turns, turn_delay, conv_delay,
-                           plan_matriz, limit=None) -> None:
+                           plan_matriz, limit=None,
+                           per_platform_limit=None) -> None:
     planned = [(pl, p, e)
                for pl in platforms for p in profiles for e in eixos]
     todo = [(pl, p, e) for (pl, p, e) in planned
             if not _conv_done(store, f"{pl}_{p.id}_{e}", n_turns)]
+    if per_platform_limit:
+        cnt: dict[str, int] = {}
+        capped = []
+        for (pl, p, e) in todo:
+            if cnt.get(pl, 0) < per_platform_limit:
+                capped.append((pl, p, e))
+                cnt[pl] = cnt.get(pl, 0) + 1
+        todo = capped
     if limit:
         todo = todo[:limit]
     print(f"[conjoint] conversas planejadas: {len(planned)} | "
@@ -347,6 +359,62 @@ def generate_conversations(store: RunStore, profiles, platforms, eixos,
                     page.close()
                 except Exception:
                     pass
+
+
+# --------------------------------------------------------------------------
+# Fase "plan" — planilha completa da conjoint p/ validação (sem browser)
+# --------------------------------------------------------------------------
+
+def export_plano_completo(store: RunStore, profiles, platforms, eixos,
+                          plan_matriz, seed_data, model, n_turns: int) -> Path:
+    """Exporta a AMOSTRA COMPLETA para inspeção antes de rodar: uma linha por
+    (perfil × eixo), com os fatores do perfil, os temas sorteados, o **system
+    prompt** do LLM-usuário (determinístico) e um **exemplo de primeira
+    mensagem** (gerado pela API — ilustrativo; na coleta o turno 1 é regerado).
+
+    O system prompt e a 1ª mensagem NÃO dependem da plataforma (o turno 1 não
+    tem resposta do modelo ainda), então a coluna `plataformas` só lista onde
+    aquela conversa será replicada. Escreve `plano_coleta_completo.xlsx`.
+    """
+    rows = []
+    plats = "+".join(platforms)
+    for eixo_key in eixos:
+        eixo = EIXOS[eixo_key]
+        for p in profiles:
+            flags = plan_matriz.get(eixo_key, {}).get(p.id, {}) or {}
+            temas_obj = [t for t in TEMAS.get(eixo_key, ())
+                         if flags.get(t.codigo)]
+            ua = UserAgent(p, eixo, seed_data, temas=temas_obj,
+                           n_turns=n_turns, model=model)
+            try:
+                primeira = ua.next_turn(None)
+            except Exception as e:  # noqa: BLE001
+                primeira = f"(erro ao gerar exemplo: {e!r})"
+            pf = p.fatores()
+            rows.append({
+                "perfil_id": p.id,
+                "eixo": eixo_key,
+                "plataformas": plats,
+                **pf,
+                "n_temas": sum(1 for v in flags.values() if v),
+                "temas_incluidos": "+".join(incluidos(flags)),
+                "primeira_mensagem_exemplo": primeira,
+                "system_prompt": ua.system,
+            })
+            print(f"[conjoint] plano: {p.id} × {eixo_key} "
+                  f"({sum(1 for v in flags.values() if v)} temas) — 1ª msg "
+                  f"gerada ({len(primeira)} chars)")
+    df = pd.DataFrame(rows)
+    out = store.dir / "plano_coleta_completo.xlsx"
+    try:
+        df.to_excel(out, index=False, engine="openpyxl")
+    except Exception as e:  # fallback CSV se openpyxl faltar
+        print(f"[conjoint] (xlsx pulado: {e!r}; salvando CSV)")
+        out = store.dir / "plano_coleta_completo.csv"
+        df.to_csv(out, index=False, encoding="utf-8-sig", sep=";")
+    print(f"[conjoint] planilha completa: {len(rows)} linhas "
+          f"(perfil × eixo) -> {out}")
+    return out
 
 
 # --------------------------------------------------------------------------
@@ -480,6 +548,7 @@ def run(n_profiles: int = 3, seed: int = 2026,
         run_id: str | None = None, model: str | None = None,
         n_turns: int = DEFAULT_N_TURNS, turn_delay: float = 3.0,
         conv_delay: float = 8.0, limit: int | None = None,
+        per_platform_limit: int | None = None,
         tema_prob: float = DEFAULT_TEMA_PROB, min_temas: int = DEFAULT_MIN_TEMAS,
         phase: str = "all") -> int:
     platforms = platforms or list(DEFAULT_PLATFORMS)
@@ -510,10 +579,19 @@ def run(n_profiles: int = 3, seed: int = 2026,
     plan_matriz = _load_or_build_plan(store, profiles, platforms, eixos,
                                       seed, tema_prob, min_temas)
 
+    if phase == "plan":
+        export_plano_completo(store, profiles, platforms, eixos, plan_matriz,
+                              seed_data, model, n_turns)
+        print(f"\n[conjoint] Plano exportado. Rode o pré-teste com: "
+              f"conjoint --run-id {store.run_id} --limit <K> "
+              f"[--platforms ...]")
+        return 0
+
     if phase in ("all", "generate"):
         generate_conversations(store, profiles, platforms, eixos, seed_data,
                                model, n_turns, turn_delay, conv_delay,
-                               plan_matriz, limit=limit)
+                               plan_matriz, limit=limit,
+                               per_platform_limit=per_platform_limit)
     if phase in ("all", "judge"):
         judge_conversations(store, rubrics, model)
         build_dataset(store, rubrics)
