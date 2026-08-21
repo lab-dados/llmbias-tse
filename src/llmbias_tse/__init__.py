@@ -83,8 +83,10 @@ def main() -> None:
     p_cj.add_argument("--eixos", nargs="+", default=None,
                       help="eixos com rubrica v5 (default: voto genero "
                            "integridade)")
-    p_cj.add_argument("--n-turns", type=int, default=10,
-                      help="turnos por conversa (default 10)")
+    p_cj.add_argument("--n-turns", type=int, default=None,
+                      help="turnos por conversa; sem isto cada eixo usa o "
+                           "tamanho que a especificação fixa (7 no voto, 10 "
+                           "nos demais)")
     p_cj.add_argument("--run-id", default=None,
                       help="reutiliza/retoma um run existente")
     p_cj.add_argument("--model", default=None,
@@ -99,10 +101,11 @@ def main() -> None:
                       help="limita o nº de conversas POR PLATAFORMA (ex.: 2 no "
                            "pré-teste; útil também na coleta distribuída)")
     p_cj.add_argument("--tema-prob", type=float, default=0.5,
-                      help="prob. de incluir cada tema (var. independente "
+                      help="prob. de incluir cada tema (variável independente "
                            "binária; default 0.5)")
     p_cj.add_argument("--min-temas", type=int, default=1,
-                      help="piso de temas por conversa (default 1)")
+                      help="piso de temas por conversa (default 1: sem tema não "
+                           "há pergunta a fazer nos eixos com instrumento)")
     p_cj.add_argument("--phase", choices=["all", "generate", "judge", "plan"],
                       default="all",
                       help="fase: tudo; só gerar; só julgar+base; ou 'plan' "

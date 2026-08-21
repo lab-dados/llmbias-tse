@@ -3,15 +3,18 @@
 Pipeline:
   1. Sorteia N perfis únicos (6 fatores, incl. escolaridade) de forma
      determinística.
-  2. Carrega a rubrica curada 4.0 (grade tipo × voz) de cada eixo — só há
-     rubrica para `voto` (ranqueamento) e `genero` (violência de gênero).
+  2. Carrega a rubrica curada de cada eixo (grade tipo × voz): `voto`
+     (ranqueamento), `genero` (violência de gênero) e `integridade`.
   3. Para cada plataforma × perfil × eixo, conduz uma conversa de N turnos
      (default 10) contra a plataforma sob teste no browser: o LLM as a user
      (API gemini-3.5-flash) gera cada turno reagindo à resposta real da
-     plataforma, escalando a posição não conforme. Os TEMAS a abordar (cada um
-     ligado a um item da rubrica) entram como variáveis independentes binárias
-     sorteadas por perfil × eixo (ver `temas.py`); uma conversa cobre o
-     subconjunto de temas sorteados. O Gemini roda em conversa momentânea (sem
+     plataforma, escalando a posição não conforme. O CONTEÚDO de cada turno
+     vem do instrumento curado do eixo (`instrumentos.py`): o roteiro da
+     conversa inteira — alternativas, exemplares, quais turnos levam duas
+     perguntas — é resolvido FORA do modelo por `instrument.plan_round()`,
+     antes da coleta, e o agente recebe a ficha de um turno por vez. Toda
+     conversa cobre TODOS os temas do eixo, ao menos duas vezes cada, conforme
+     as instruções de combinação. O Gemini roda em conversa momentânea (sem
      memória); as demais plataformas abrem um chat novo a cada conversa.
   4. Aplica o LLM as a judge (v4.0) a cada conversa: extrai achados POR
      RESPOSTA (tipo × voz) e agrega contagens descritivas (sem escore somado).
@@ -38,7 +41,8 @@ from .drivers import REGISTRY
 from .judge import annotate
 from .rubrics import RUBRICS, RubricGrid, get_rubric
 from .storage import RunStore, _now_iso
-from .temas import TEMAS, build_tema_plan, incluidos, temas_do_eixo
+from . import instrument
+from .instrumentos import get_instrumento
 from .user_agent import UserAgent
 
 # Plataforma -> (driver no REGISTRY, rótulo de modo de isolamento).
@@ -75,14 +79,18 @@ PLATFORM_DRIVERS: dict[str, tuple[str, str]] = {
 # salvo no histórico da conta.
 DEEPSEEK_SEM_MOMENTANEA = True
 
+# Temas como variável independente binária: prob. de inclusão de cada tema e
+# piso por conversa. O piso 1 é NECESSÁRIO (sem tema não há pergunta a fazer nos
+# eixos com instrumento) e é o que menos distorce o desenho — exigir 2 desloca
+# bem mais a marginal e correlaciona os temas entre si.
+DEFAULT_TEMA_PROB = 0.5
+DEFAULT_MIN_TEMAS = 1
+
 DEFAULT_PLATFORMS = ["gemini", "chatgpt", "claude", "deepseek", "grok",
                      "copilot"]
 DEFAULT_EIXOS = list(RUBRICS.keys())  # ["voto", "genero", "integridade"]
-DEFAULT_N_TURNS = 10
-# Probabilidade de incluir cada tema (variável independente binária) e piso de
-# temas por conversa (uma conversa sem tema nenhum não testaria nada).
-DEFAULT_TEMA_PROB = 0.5
-DEFAULT_MIN_TEMAS = 1
+# Sem `--n-turns`, cada eixo usa o tamanho de conversa que a especificação
+# fixa para ele (7 no ranqueamento, 10 nos outros dois).
 
 
 # --------------------------------------------------------------------------
@@ -117,66 +125,122 @@ def _snapshot_rubrics(store: RunStore, eixos: list[str]) -> dict[str, RubricGrid
 
 
 def _load_or_build_plan(store: RunStore, profiles, platforms, eixos,
-                        seed: int, tema_prob: float, min_temas: int
-                        ) -> dict[str, dict[str, dict[str, bool]]]:
-    """Monta (ou retoma) o PLANO DE COLETA balanceado ANTES de rodar.
+                        seed: int, n_turns: int | None,
+                        tema_prob: float = DEFAULT_TEMA_PROB,
+                        min_temas: int = DEFAULT_MIN_TEMAS,
+                        ) -> tuple[dict[str, dict[str, tuple]],
+                                   dict[str, dict[str, dict[str, bool]]]]:
+    """Monta (ou retoma) o PLANO DE COLETA da rodada ANTES de rodar.
 
-    O plano fixa, para cada eixo × perfil, o vetor binário de temas — o mesmo
-    para todas as plataformas (mesmo rol → comparabilidade). É persistido em
-    `plano_coleta.json` (fonte da verdade, retomável) e `plano_coleta.csv`
-    (inspeção/pré-registro: uma linha por conversa planejada). Retorna a matriz
-    {eixo: {profile_id: flags}}.
+    Para cada eixo com instrumento, `instrument.plan_round()` resolve o roteiro
+    de todos os perfis de uma vez — precisa ser de uma vez porque a não
+    repetição de exemplares vale ENTRE conversas. O roteiro é função de (seed,
+    eixo, perfil) e não da plataforma, então a mesma célula do conjoint recebe
+    o mesmo estímulo em todas as plataformas.
+
+    Persistido em `plano_coleta.json` (fonte da verdade, retomável) e
+    `plano_coleta.csv` (uma linha por conversa planejada, para inspeção e
+    pré-registro). Devolve {eixo: {profile_id: roteiro}}.
     """
     path = store.dir / "plano_coleta.json"
-    if path.exists():
-        raw = json.loads(path.read_text(encoding="utf-8"))
-        print(f"[conjoint] reusando plano de coleta de {path}")
-        return raw["matriz"]
-
     pids = [p.id for p in profiles]
-    matriz = build_tema_plan(eixos, pids, seed=seed, prob=tema_prob,
-                             min_temas=min_temas)
-    # roster enumerado (plataforma × perfil × eixo) para inspeção
-    conversas = []
-    for pl in platforms:
-        for p in profiles:
-            for e in eixos:
-                flags = matriz[e][p.id]
-                conversas.append({
-                    "conversation_id": f"{pl}_{p.id}_{e}",
-                    "platform": pl, "perfil_id": p.id, "eixo": e,
-                    "n_temas": sum(1 for v in flags.values() if v),
-                    "temas_incluidos": incluidos(flags),
-                })
-    _save_json(path, {
-        "seed": seed, "tema_prob": tema_prob, "min_temas": min_temas,
-        "platforms": list(platforms), "eixos": list(eixos),
-        "matriz": matriz, "conversas": conversas,
-    })
-    # CSV inspecionável: uma linha por conversa planejada, com tema_Tx (0/1)
-    csv_rows = []
-    for c in conversas:
-        flags = matriz[c["eixo"]][c["perfil_id"]]
-        csv_rows.append({
-            "conversation_id": c["conversation_id"], "platform": c["platform"],
-            "perfil_id": c["perfil_id"], "eixo": c["eixo"],
-            "n_temas": c["n_temas"],
-            "temas_incluidos": "+".join(c["temas_incluidos"]),
-            **{f"tema_{cod}": int(bool(v)) for cod, v in flags.items()},
-        })
-    pd.DataFrame(csv_rows).to_csv(store.dir / "plano_coleta.csv", index=False,
-                                  encoding="utf-8-sig", sep=";")
-    print(f"[conjoint] plano de coleta montado: {len(conversas)} conversas "
-          f"planejadas -> {path}")
+
+    roteiros: dict[str, dict[str, tuple]] = {}
+    temas_plan: dict[str, dict[str, dict[str, bool]]] = {}
+    avisos: dict[str, list[str]] = {}
     for e in eixos:
-        if e not in TEMAS:
-            print(f"[conjoint]   eixo {e}: sem temas (arco fixo)")
+        inst = get_instrumento(e)
+        if inst is None:
+            print(f"[conjoint]   eixo {e}: sem instrumento (arco de referência)")
+            roteiros[e] = {}
+            temas_plan[e] = {pid: {} for pid in pids}
             continue
-        cov = {t.codigo: sum(1 for pid in pids if matriz[e][pid][t.codigo])
-               for t in temas_do_eixo(e)}
-        print(f"[conjoint]   cobertura de temas ({e}, em {len(pids)} perfis): "
-              f"{cov}")
-    return matriz
+        # Temas como variável independente binária (sorteio por perfil,
+        # independente da plataforma). Eixo sem temas (voto) passa direto.
+        tp = ({} if inst.sem_temas
+              else instrument.sortear_temas(inst, pids, seed=seed,
+                                            prob=tema_prob,
+                                            min_temas=min_temas))
+        temas_plan[e] = tp or {pid: {} for pid in pids}
+        rot, av = instrument.plan_round(
+            inst, pids, seed=seed, n_turns=n_turns or inst.n_turns,
+            temas_por_perfil=(tp or None),
+        )
+        roteiros[e] = rot
+        avisos[e] = av
+        if tp:
+            cont = {t.key: sum(1 for pid in pids if tp[pid].get(t.key))
+                    for t in inst.temas}
+            media = sum(sum(1 for v in tp[pid].values() if v)
+                        for pid in pids) / max(1, len(pids))
+            print(f"[conjoint]   eixo {e}: temas sorteados (p={tema_prob}, "
+                  f"piso={min_temas}) — perfis por tema: {cont} | "
+                  f"média de temas/conversa: {media:.2f}")
+
+    if path.exists():
+        print(f"[conjoint] reusando plano de coleta de {path}")
+    else:
+        conversas = []
+        for pl in platforms:
+            for prof in profiles:
+                for e in eixos:
+                    inst = get_instrumento(e)
+                    rot = roteiros.get(e, {}).get(prof.id, ())
+                    cob = instrument.resumo_cobertura(inst, rot) if inst else {}
+                    fmt = instrument.resumo_formato(rot)
+                    flags = temas_plan.get(e, {}).get(prof.id, {}) or {}
+                    conversas.append({
+                        "conversation_id": f"{pl}_{prof.id}_{e}",
+                        "platform": pl, "perfil_id": prof.id, "eixo": e,
+                        "alternativas": [
+                            a.key for t in rot for a in t.alternativas
+                        ],
+                        "temas_flags": flags,
+                        "temas_incluidos": [c for c, v in flags.items() if v],
+                        "cobertura_temas": cob, **fmt,
+                    })
+        _save_json(path, {
+            "seed": seed, "n_turns": n_turns,
+            "tema_prob": tema_prob, "min_temas": min_temas,
+            "platforms": list(platforms), "eixos": list(eixos),
+            "conversas": conversas, "avisos": avisos,
+        })
+        csv_rows = [
+            {
+                "conversation_id": c["conversation_id"],
+                "platform": c["platform"], "perfil_id": c["perfil_id"],
+                "eixo": c["eixo"], "turnos": c["turnos"],
+                "turnos_uma_pergunta": c["turnos_uma_pergunta"],
+                "turnos_duas_perguntas": c["turnos_duas_perguntas"],
+                "perguntas_substantivas": c["perguntas_substantivas"],
+                "alternativas": "+".join(c["alternativas"]),
+                "n_temas": sum(1 for v in c["temas_flags"].values() if v),
+                "temas_incluidos": "+".join(c["temas_incluidos"]),
+                # tema_Tx = variável independente (sorteada); aparicoes_Tx =
+                # quantas perguntas o roteiro dedicou ao tema (dose).
+                **{f"tema_{cod}": int(bool(v))
+                   for cod, v in c["temas_flags"].items()},
+                **{f"aparicoes_{cod}": n
+                   for cod, n in c["cobertura_temas"].items()},
+            }
+            for c in conversas
+        ]
+        pd.DataFrame(csv_rows).to_csv(
+            store.dir / "plano_coleta.csv", index=False,
+            encoding="utf-8-sig", sep=";",
+        )
+        print(f"[conjoint] plano de coleta montado: {len(conversas)} conversas "
+              f"planejadas -> {path}")
+
+    for e in eixos:
+        av = avisos.get(e) or []
+        if av:
+            print(f"[conjoint]   eixo {e}: {len(av)} aviso(s) de planejamento")
+            for a in av[:5]:
+                print(f"[conjoint]     - {a}")
+            if len(av) > 5:
+                print(f"[conjoint]     ... (todos em {path.name})")
+    return roteiros, temas_plan
 
 
 def _conv_path(store: RunStore, conv_id: str) -> Path:
@@ -201,17 +265,20 @@ def _conv_done(store: RunStore, conv_id: str, n_turns: int) -> bool:
 
 def _run_one_conversation(page, store, driver, platform, mode, profile: Profile,
                           eixo_key: str, seed_data, model, n_turns: int,
-                          turn_delay: float, plan_matriz) -> dict:
+                          turn_delay: float, plan_roteiros) -> dict:
     eixo = EIXOS[eixo_key]
     conv_id = f"{platform}_{profile.id}_{eixo_key}"
-    # Vetor binário de inclusão de temas (variáveis independentes) lido do PLANO
-    # DE COLETA pré-montado — o mesmo para todas as plataformas num dado
-    # perfil × eixo (mesmo rol → comparabilidade).
-    tema_flags = plan_matriz[eixo_key][profile.id]
-    temas_in = incluidos(tema_flags)
-    temas_obj = [t for t in TEMAS.get(eixo_key, ()) if tema_flags.get(t.codigo)]
+    # Roteiro pré-resolvido lido do PLANO DE COLETA — o mesmo para todas as
+    # plataformas num dado perfil × eixo (mesmo estímulo → comparabilidade).
+    inst = get_instrumento(eixo_key)
+    roteiro = plan_roteiros.get(eixo_key, {}).get(profile.id, ())
+    if roteiro:
+        n_turns = len(roteiro)
+    cobertura = instrument.resumo_cobertura(inst, roteiro) if inst else {}
+    formato = instrument.resumo_formato(roteiro)
+    alt_keys = [a.key for t in roteiro for a in t.alternativas]
     print(f"\n[conjoint] === {conv_id} | {profile.fatores()} | "
-          f"temas={temas_in} ===")
+          f"{n_turns} turnos | cobertura={cobertura} ===")
     record = {
         "run_id": store.run_id,
         "conversation_id": conv_id,
@@ -221,8 +288,29 @@ def _run_one_conversation(page, store, driver, platform, mode, profile: Profile,
         "profile": asdict(profile),
         "eixo": eixo_key,
         "tema": eixo.tema,
-        "temas_flags": tema_flags,
-        "temas_incluidos": temas_in,
+        "instrumento": inst.key if inst else None,
+        "cobertura_temas": cobertura,
+        "formato_turnos": formato,
+        "alternativas": alt_keys,
+        "roteiro": [
+            {
+                "ordem": t.ordem,
+                "n_perguntas": t.n_perguntas,
+                "perguntas": [
+                    {
+                        "relato": q.relato.key if q.relato else None,
+                        "pedido": q.pedido.key if q.pedido else None,
+                        "fundida": q.fundida,
+                        "exemplares": [
+                            {"alternativa": k, "lista": r, "item": v}
+                            for k, r, v in q.exemplares
+                        ],
+                    }
+                    for q in t.perguntas
+                ],
+            }
+            for t in roteiro
+        ],
         "persona": persona_presentation(profile),
         "n_turns": n_turns,
         "started_at": _now_iso(),
@@ -242,8 +330,8 @@ def _run_one_conversation(page, store, driver, platform, mode, profile: Profile,
         store.save_conversation(record)
         return record
 
-    ua = UserAgent(profile, eixo, seed_data, temas=temas_obj, n_turns=n_turns,
-                   model=model)
+    ua = UserAgent(profile, eixo, seed_data, instrumento=inst,
+                   roteiro=roteiro, n_turns=n_turns, model=model)
     prev_response: str | None = None
     for ti in range(1, n_turns + 1):
         t0 = _now_iso()
@@ -293,12 +381,22 @@ def _run_one_conversation(page, store, driver, platform, mode, profile: Profile,
 
 def generate_conversations(store: RunStore, profiles, platforms, eixos,
                            seed_data, model, n_turns, turn_delay, conv_delay,
-                           plan_matriz, limit=None,
+                           plan_roteiros, limit=None,
                            per_platform_limit=None) -> None:
+    # O tamanho da conversa é por EIXO: a especificação fixa sete turnos no
+    # ranqueamento e dez nos outros dois. `--n-turns`, quando passado, sobrepõe
+    # todos e serve para smoke test.
+    def turnos_de(e: str, pid: str) -> int:
+        rot = plan_roteiros.get(e, {}).get(pid, ())
+        if rot:
+            return len(rot)
+        inst = get_instrumento(e)
+        return n_turns or (inst.n_turns if inst else 10)
+
     planned = [(pl, p, e)
                for pl in platforms for p in profiles for e in eixos]
     todo = [(pl, p, e) for (pl, p, e) in planned
-            if not _conv_done(store, f"{pl}_{p.id}_{e}", n_turns)]
+            if not _conv_done(store, f"{pl}_{p.id}_{e}", turnos_de(e, p.id))]
     if per_platform_limit:
         cnt: dict[str, int] = {}
         capped = []
@@ -311,7 +409,8 @@ def generate_conversations(store: RunStore, profiles, platforms, eixos,
         todo = todo[:limit]
     print(f"[conjoint] conversas planejadas: {len(planned)} | "
           f"a fazer agora: {len(todo)} | plataformas: {platforms} | "
-          f"turnos/conversa: {n_turns}")
+          f"turnos/conversa: "
+          f"{ {e: turnos_de(e, profiles[0].id) for e in eixos} }")
     if not todo:
         print("[conjoint] nada a gerar (todas já concluídas).")
         return
@@ -350,8 +449,9 @@ def generate_conversations(store: RunStore, profiles, platforms, eixos,
                 if i:
                     time.sleep(conv_delay)
                 _run_one_conversation(page, store, drivers[pl], pl, modes[pl],
-                                      p, e, seed_data, model, n_turns, turn_delay,
-                                      plan_matriz)
+                                      p, e, seed_data, model,
+                                      turnos_de(e, p.id), turn_delay,
+                                      plan_roteiros)
         finally:
             # Não fecha a aba do WhatsApp (preserva a sessão para retomadas).
             if page is not wa_page:
@@ -366,44 +466,55 @@ def generate_conversations(store: RunStore, profiles, platforms, eixos,
 # --------------------------------------------------------------------------
 
 def export_plano_completo(store: RunStore, profiles, platforms, eixos,
-                          plan_matriz, seed_data, model, n_turns: int) -> Path:
+                          plan_roteiros, plan_temas, seed_data, model,
+                          n_turns: int | None) -> Path:
     """Exporta a AMOSTRA COMPLETA para inspeção antes de rodar: uma linha por
-    (perfil × eixo), com os fatores do perfil, os temas sorteados, o **system
-    prompt** do LLM-usuário (determinístico) e um **exemplo de primeira
-    mensagem** (gerado pela API — ilustrativo; na coleta o turno 1 é regerado).
+    (perfil × eixo), com os fatores do perfil, os temas sorteados, o roteiro
+    resolvido (fichas de todos os turnos), o **system prompt** do LLM-usuário e
+    um **exemplo de primeira mensagem** (gerado pela API — ilustrativo; na
+    coleta o turno 1 é regerado).
 
-    O system prompt e a 1ª mensagem NÃO dependem da plataforma (o turno 1 não
-    tem resposta do modelo ainda), então a coluna `plataformas` só lista onde
-    aquela conversa será replicada. Escreve `plano_coleta_completo.xlsx`.
+    O roteiro, o system prompt e a 1ª mensagem NÃO dependem da plataforma, então
+    a coluna `plataformas` só lista onde aquela conversa será replicada.
+    Escreve `plano_coleta_completo.xlsx`.
     """
     rows = []
     plats = "+".join(platforms)
     for eixo_key in eixos:
         eixo = EIXOS[eixo_key]
+        inst = get_instrumento(eixo_key)
         for p in profiles:
-            flags = plan_matriz.get(eixo_key, {}).get(p.id, {}) or {}
-            temas_obj = [t for t in TEMAS.get(eixo_key, ())
-                         if flags.get(t.codigo)]
-            ua = UserAgent(p, eixo, seed_data, temas=temas_obj,
-                           n_turns=n_turns, model=model)
+            flags = plan_temas.get(eixo_key, {}).get(p.id, {}) or {}
+            roteiro = plan_roteiros.get(eixo_key, {}).get(p.id, ())
+            n_t = len(roteiro) or (n_turns or (inst.n_turns if inst else 10))
+            ua = UserAgent(p, eixo, seed_data, instrumento=inst,
+                           roteiro=roteiro, n_turns=n_t, model=model)
             try:
                 primeira = ua.next_turn(None)
             except Exception as e:  # noqa: BLE001
                 primeira = f"(erro ao gerar exemplo: {e!r})"
+            fichas = "\n\n".join(
+                instrument.ficha(inst, t) for t in roteiro
+            ) if (inst and roteiro) else ""
+            cob = instrument.resumo_cobertura(inst, roteiro) if inst else {}
             pf = p.fatores()
             rows.append({
                 "perfil_id": p.id,
                 "eixo": eixo_key,
                 "plataformas": plats,
                 **pf,
+                "n_turnos": n_t,
                 "n_temas": sum(1 for v in flags.values() if v),
-                "temas_incluidos": "+".join(incluidos(flags)),
+                "temas_incluidos": "+".join(c for c, v in flags.items() if v),
+                **{f"tema_{c}": int(bool(v)) for c, v in flags.items()},
+                **{f"aparicoes_{c}": n for c, n in cob.items()},
                 "primeira_mensagem_exemplo": primeira,
+                "roteiro_fichas": fichas,
                 "system_prompt": ua.system,
             })
             print(f"[conjoint] plano: {p.id} × {eixo_key} "
-                  f"({sum(1 for v in flags.values() if v)} temas) — 1ª msg "
-                  f"gerada ({len(primeira)} chars)")
+                  f"({sum(1 for v in flags.values() if v)} temas, {n_t} turnos)"
+                  f" — 1ª msg gerada ({len(primeira)} chars)")
     df = pd.DataFrame(rows)
     out = store.dir / "plano_coleta_completo.xlsx"
     try:
@@ -466,14 +577,20 @@ def build_dataset(store: RunStore, rubrics: dict[str, RubricGrid]) -> Path:
         ap = anot_dir / f"{conv_id}.json"
         anot = json.loads(ap.read_text(encoding="utf-8")) if ap.exists() else None
         prof = rec["profile"]
-        # temas como variáveis independentes binárias (tema_Tx = incluído?) e a
-        # variável dependente binária violou_Tx (algum turno violou aquele tipo);
-        # os códigos T1..Tn são LOCAIS ao eixo (mesma convenção de por_tipo).
-        tema_flags = rec.get("temas_flags") or {}
+        # Cada conversa cobre o SUBCONJUNTO de temas sorteado para o seu perfil
+        # (tema = variável independente binária). Do lado do tema saem três
+        # colunas: `tema_Tx` (0/1, a variável MANIPULADA — entrou no sorteio?),
+        # `aparicoes_Tx` (quantas perguntas o roteiro dedicou a ele: a dose) e
+        # `violou_Tx` (0/1, a variável dependente). `cobertura_temas` é medida
+        # sobre o instrumento COMPLETO, então aparições > 0 identifica
+        # exatamente os temas incluídos. Os códigos T1..Tn são LOCAIS ao eixo.
+        cobertura = rec.get("cobertura_temas") or {}
+        formato = rec.get("formato_turnos") or {}
         por_tipo = (anot or {}).get("por_tipo") or {}
         tema_cols: dict[str, object] = {}
-        for cod, incl in tema_flags.items():
-            tema_cols[f"tema_{cod}"] = int(bool(incl))
+        for cod, n_ap in cobertura.items():
+            tema_cols[f"tema_{cod}"] = int(int(n_ap) > 0)
+            tema_cols[f"aparicoes_{cod}"] = int(n_ap)
             tema_cols[f"violou_{cod}"] = (
                 int(por_tipo.get(cod, 0) > 0) if anot else None
             )
@@ -484,8 +601,13 @@ def build_dataset(store: RunStore, rubrics: dict[str, RubricGrid]) -> Path:
             "mode": rec["mode"],
             "eixo": rec["eixo"],
             "tema": rec["tema"],
-            "temas_incluidos": "+".join(rec.get("temas_incluidos") or []),
-            "n_temas_incluidos": sum(1 for v in tema_flags.values() if v),
+            "instrumento": rec.get("instrumento"),
+            "alternativas": "+".join(rec.get("alternativas") or []),
+            # formato dos turnos (§6 da especificação pede o registro)
+            "turnos": formato.get("turnos"),
+            "turnos_uma_pergunta": formato.get("turnos_uma_pergunta"),
+            "turnos_duas_perguntas": formato.get("turnos_duas_perguntas"),
+            "perguntas_substantivas": formato.get("perguntas_substantivas"),
             # fatores do perfil (uma coluna cada)
             "politica": prof["politica"],
             "genero": prof["genero"],
@@ -496,7 +618,7 @@ def build_dataset(store: RunStore, rubrics: dict[str, RubricGrid]) -> Path:
             "perfil_id": prof["id"],
             # variável dependente binária no nível da conversa
             "violou": (int(anot["achados_violacao"] > 0) if anot else None),
-            # colunas por tema (independentes) e por violação de tema (dependentes)
+            # exposição por tema (aparicoes_Tx) e violação por tema (violou_Tx)
             **tema_cols,
             # agregados descritivos da anotação (sem escore somado)
             "n_turnos_avaliados": anot["n_turnos_avaliados"] if anot else None,
@@ -513,7 +635,7 @@ def build_dataset(store: RunStore, rubrics: dict[str, RubricGrid]) -> Path:
                                       ensure_ascii=False),
             "achados": json.dumps(anot["turnos"] if anot else [],
                                   ensure_ascii=False),
-            "temas_flags": json.dumps(tema_flags, ensure_ascii=False),
+            "roteiro": json.dumps(rec.get("roteiro") or [], ensure_ascii=False),
             "conversa": json.dumps(rec["turns"], ensure_ascii=False),
             "persona": rec["persona"],
         }
@@ -546,7 +668,7 @@ def build_dataset(store: RunStore, rubrics: dict[str, RubricGrid]) -> Path:
 def run(n_profiles: int = 3, seed: int = 2026,
         platforms: list[str] | None = None, eixos: list[str] | None = None,
         run_id: str | None = None, model: str | None = None,
-        n_turns: int = DEFAULT_N_TURNS, turn_delay: float = 3.0,
+        n_turns: int | None = None, turn_delay: float = 3.0,
         conv_delay: float = 8.0, limit: int | None = None,
         per_platform_limit: int | None = None,
         tema_prob: float = DEFAULT_TEMA_PROB, min_temas: int = DEFAULT_MIN_TEMAS,
@@ -568,20 +690,21 @@ def run(n_profiles: int = 3, seed: int = 2026,
 
     store = RunStore(run_id)
     print(f"[conjoint] run_id={store.run_id} | plataformas={platforms} | "
-          f"eixos={eixos} | perfis={n_profiles} | turnos={n_turns} | "
-          f"tema_prob={tema_prob} min_temas={min_temas} | "
-          f"modelo juiz/usuário={model}")
+          f"eixos={eixos} | perfis={n_profiles} | "
+          f"turnos={n_turns or 'do eixo'} | modelo juiz/usuário={model}")
     seed_data = load_seed()
     profiles = _load_or_sample_profiles(store, n_profiles, seed)
     rubrics = _snapshot_rubrics(store, eixos)
-    # Plano de coleta (matriz de temas por eixo × perfil) montado ANTES de rodar,
-    # inspecionável e retomável; o mesmo rol para todas as plataformas.
-    plan_matriz = _load_or_build_plan(store, profiles, platforms, eixos,
-                                      seed, tema_prob, min_temas)
+    # Plano de coleta (roteiro por eixo × perfil) montado ANTES de rodar,
+    # inspecionável e retomável; o mesmo estímulo para todas as plataformas.
+    plan_roteiros, plan_temas = _load_or_build_plan(
+        store, profiles, platforms, eixos, seed, n_turns,
+        tema_prob=tema_prob, min_temas=min_temas,
+    )
 
     if phase == "plan":
-        export_plano_completo(store, profiles, platforms, eixos, plan_matriz,
-                              seed_data, model, n_turns)
+        export_plano_completo(store, profiles, platforms, eixos, plan_roteiros,
+                              plan_temas, seed_data, model, n_turns)
         print(f"\n[conjoint] Plano exportado. Rode o pré-teste com: "
               f"conjoint --run-id {store.run_id} --limit <K> "
               f"[--platforms ...]")
@@ -590,7 +713,7 @@ def run(n_profiles: int = 3, seed: int = 2026,
     if phase in ("all", "generate"):
         generate_conversations(store, profiles, platforms, eixos, seed_data,
                                model, n_turns, turn_delay, conv_delay,
-                               plan_matriz, limit=limit,
+                               plan_roteiros, limit=limit,
                                per_platform_limit=per_platform_limit)
     if phase in ("all", "judge"):
         judge_conversations(store, rubrics, model)
