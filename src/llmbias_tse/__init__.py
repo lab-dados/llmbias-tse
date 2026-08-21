@@ -110,6 +110,11 @@ def main() -> None:
                       help="painel de juízes: 'todos' (gemini opus gpt) ou uma "
                            "lista (ex.: gemini opus). Sem a flag, roda só o "
                            "juiz Gemini de sempre.")
+    p_cj.add_argument("--judge-mode", choices=["turno", "conversa"],
+                      default="turno",
+                      help="juiz por turno (default, reenvia a conversa a cada "
+                           "turno) ou 'conversa' (1 chamada por conversa, "
+                           "achados marcados por turno; ~6x mais barato)")
     p_cj.add_argument("--phase", choices=["all", "generate", "judge", "plan"],
                       default="all",
                       help="fase: tudo; só gerar; só julgar+base; ou 'plan' "
@@ -143,7 +148,8 @@ def main() -> None:
             conv_delay=args.conv_delay, limit=args.limit,
             per_platform_limit=args.per_platform_limit,
             tema_prob=args.tema_prob, min_temas=args.min_temas,
-            juizes_keys=args.juizes, phase=args.phase,
+            juizes_keys=args.juizes, judge_mode=args.judge_mode,
+            phase=args.phase,
         ))
     elif args.cmd == "tools":
         from .drivers import REGISTRY

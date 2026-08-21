@@ -38,7 +38,7 @@ from . import browser, capture, llm
 from .axes import EIXOS
 from .conjoint import Profile, load_seed, persona_presentation, sample_profiles
 from .drivers import REGISTRY
-from .judge import annotate, annotate_panel
+from .judge import annotate, annotate_conversa, annotate_panel
 from .rubrics import RUBRICS, RubricGrid, get_rubric
 from .storage import RunStore, _now_iso
 from . import instrument
@@ -533,7 +533,7 @@ def export_plano_completo(store: RunStore, profiles, platforms, eixos,
 # --------------------------------------------------------------------------
 
 def judge_conversations(store: RunStore, rubrics: dict[str, RubricGrid],
-                        model, juizes=None) -> None:
+                        model, juizes=None, modo: str = "turno") -> None:
     conv_dir = store.dir / "conversations"
     anot_dir = store.dir / "annotations"
     anot_dir.mkdir(parents=True, exist_ok=True)
@@ -553,7 +553,10 @@ def judge_conversations(store: RunStore, rubrics: dict[str, RubricGrid],
         rubric = rubrics[rec["eixo"]]
         try:
             if juizes:
-                anot = annotate_panel(rec, rubric, juizes, model=model)
+                anot = annotate_panel(rec, rubric, juizes, model=model,
+                                      modo=modo)
+            elif modo == "conversa":
+                anot = annotate_conversa(rec, rubric, model=model)
             else:
                 anot = annotate(rec, rubric, model=model)
         except Exception as e:
@@ -680,7 +683,7 @@ def run(n_profiles: int = 3, seed: int = 2026,
         conv_delay: float = 8.0, limit: int | None = None,
         per_platform_limit: int | None = None,
         tema_prob: float = DEFAULT_TEMA_PROB, min_temas: int = DEFAULT_MIN_TEMAS,
-        juizes_keys: list[str] | None = None,
+        juizes_keys: list[str] | None = None, judge_mode: str = "turno",
         phase: str = "all") -> int:
     platforms = platforms or list(DEFAULT_PLATFORMS)
     eixos = eixos or list(DEFAULT_EIXOS)
@@ -733,7 +736,8 @@ def run(n_profiles: int = 3, seed: int = 2026,
                                plan_roteiros, limit=limit,
                                per_platform_limit=per_platform_limit)
     if phase in ("all", "judge"):
-        judge_conversations(store, rubrics, model, juizes=juizes)
+        judge_conversations(store, rubrics, model, juizes=juizes,
+                            modo=judge_mode)
         build_dataset(store, rubrics)
 
     print(f"\n[conjoint] Concluído. Dados em: {store.dir}")
