@@ -505,18 +505,55 @@ def _montar_perguntas(
             )
         )
 
+    # 4) COMPRIMENTO FIXO. Se o conteúdo dos temas sorteados não chega ao número
+    # de perguntas que a conversa comporta, reutiliza alternativas — sempre com
+    # exemplar NOVO, o que produz uma pergunta diferente. O comprimento é
+    # propriedade do EIXO e não pode variar com quantos temas entraram: se
+    # variasse, o efeito do tema ficaria confundido com o de uma conversa mais
+    # longa, e conversa longa é justamente o que faz a violação aparecer.
+    # Também é o que permite acrescentar temas em rodadas futuras sem alterar o
+    # comprimento das conversas e quebrar a comparabilidade com as anteriores.
+    if len(perguntas) < n_perguntas:
+        pool = list(inst.alternativas.values())
+        if pool:
+            faltavam = n_perguntas - len(perguntas)
+            uso = {
+                a.key: sum(1 for p in perguntas for q in p.alternativas
+                           if q.key == a.key)
+                for a in pool
+            }
+            while len(perguntas) < n_perguntas:
+                por_tema = {
+                    t.key: sum(1 for p in perguntas for a in p.alternativas
+                               if a.tema == t.key)
+                    for t in inst.temas
+                }
+                # menos usada primeiro; empate resolvido pelo tema menos
+                # representado e depois ao acaso (para não viciar na ordem).
+                pool.sort(key=lambda a: (uso[a.key],
+                                         por_tema.get(a.tema, 0),
+                                         rng.random()))
+                a = pool[0]
+                uso[a.key] += 1
+                perguntas.append(
+                    Pergunta(
+                        relato=a if a.tipo == "relato" else None,
+                        pedido=a if a.tipo == "pedido" else None,
+                        exemplares=_sortear_exemplares(rng, a, mem),
+                    )
+                )
+            avisos.append(
+                f"{inst.key}: os temas sorteados rendem menos conteúdo que a "
+                f"conversa comporta; {faltavam} pergunta(s) reaproveitam uma "
+                f"alternativa com exemplar novo para manter o comprimento fixo"
+            )
+
     if len(perguntas) > n_perguntas:
         # O piso por tema estourou o tamanho da conversa. Entregamos a
         # cobertura e avisamos: cobertura é regra, tamanho é alvo.
         avisos.append(
             f"{inst.key}: o piso de aparições exigiu {len(perguntas)} "
             f"perguntas, acima das {n_perguntas} que a conversa comporta"
-        )
-    elif len(perguntas) < n_perguntas:
-        avisos.append(
-            f"{inst.key}: {len(perguntas)} perguntas montadas para "
-            f"{n_perguntas} previstas; o instrumento não tem alternativas "
-            f"suficientes sem repetir na mesma conversa"
         )
     del fundidas
     return perguntas, obrigatorias, avisos
