@@ -14,6 +14,9 @@ deixando a definição de intensidade/ponderação para a análise.
 
 from __future__ import annotations
 
+import os
+from concurrent.futures import ThreadPoolExecutor
+
 from pydantic import BaseModel, Field
 
 from . import llm
@@ -72,6 +75,14 @@ class ExtracaoConversa(BaseModel):
     """
     achados: list[AchadoConversa] = Field(default_factory=list)
     resistencia_por_turno: list[ResistenciaTurno] = Field(default_factory=list)
+
+
+def _workers() -> int:
+    """Chamadas de juiz simultâneas (env `LLMBIAS_JUDGE_WORKERS`, default 8)."""
+    try:
+        return max(1, int(os.environ.get("LLMBIAS_JUDGE_WORKERS", "8")))
+    except ValueError:
+        return 8
 
 
 # --------------------------------------------------------------------------
@@ -336,19 +347,35 @@ def annotate(conversation: dict, rubric: RubricGrid, *,
     turnos_com_violacao = 0
     turnos_avaliados = 0
 
-    for i, t in enumerate(turns):
-        resposta = (t.get("response") or "").strip()
-        if not (t.get("ok") and resposta):
-            continue
-        turnos_avaliados += 1
-        conversa_anterior = _format_prev(turns, i)
+    # As chamadas de turno são INDEPENDENTES entre si (cada uma recebe o
+    # contexto anterior da conversa JÁ GRAVADA, não do juiz), então rodam em
+    # paralelo. Sequencialmente, 3 juízes × 10 turnos levavam ~13 min por
+    # conversa — o julgamento virava um gargalo maior que o browser.
+    avaliaveis = [(i, t) for i, t in enumerate(turns)
+                  if t.get("ok") and (t.get("response") or "").strip()]
+    turnos_avaliados = len(avaliaveis)
+    workers = _workers()
+
+    def _extrai(par):
+        i, t = par
         try:
-            ext = annotate_turn(rubric, conversa_anterior,
-                                t.get("prompt", ""), resposta, model=model,
-                                juiz=juiz)
+            return i, t, annotate_turn(
+                rubric, _format_prev(turns, i), t.get("prompt", ""),
+                (t.get("response") or "").strip(), model=model, juiz=juiz,
+            ), None
         except Exception as e:  # noqa: BLE001
+            return i, t, None, e
+
+    if workers > 1 and len(avaliaveis) > 1:
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            resultados = list(pool.map(_extrai, avaliaveis))
+    else:
+        resultados = [_extrai(par) for par in avaliaveis]
+
+    for i, t, ext, erro in resultados:
+        if erro is not None:
             por_turno.append({
-                "turn": t.get("turn"), "erro": repr(e),
+                "turn": t.get("turn"), "erro": repr(erro),
                 "achados": [], "resistencia": [],
             })
             continue
@@ -498,14 +525,26 @@ def annotate_panel(conversation: dict, rubric: RubricGrid, juizes,
     responderam), para que o resto do pipeline (dataset, `violou_Tx`) continue
     funcionando sem mudança.
     """
-    por_juiz: dict[str, dict] = {}
-    for j in juizes:
+    fn = annotate_conversa if modo == "conversa" else annotate
+
+    def _um_juiz(j):
         try:
-            fn = annotate_conversa if modo == "conversa" else annotate
-            por_juiz[j.key] = fn(conversation, rubric, model=model, juiz=j)
+            return j.key, fn(conversation, rubric, model=model, juiz=j)
         except Exception as e:  # noqa: BLE001
             print(f"[juizes] {j.key} falhou na conversa inteira: {e!r}")
-            por_juiz[j.key] = {"erro": repr(e)}
+            return j.key, {"erro": repr(e)}
+
+    # Os juízes também são independentes entre si: rodam em paralelo, cada um
+    # paralelizando os próprios turnos.
+    por_juiz: dict[str, dict] = {}
+    if len(juizes) > 1:
+        with ThreadPoolExecutor(max_workers=len(juizes)) as pool:
+            for k, v in pool.map(_um_juiz, juizes):
+                por_juiz[k] = v
+    else:
+        for j in juizes:
+            k, v = _um_juiz(j)
+            por_juiz[k] = v
 
     validos = {k: v for k, v in por_juiz.items() if "erro" not in v}
     tipos = [t.codigo for t in rubric.tipos]
