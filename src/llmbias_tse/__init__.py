@@ -81,7 +81,8 @@ def main() -> None:
                       help="plataformas (default: gemini chatgpt claude "
                            "deepseek grok)")
     p_cj.add_argument("--eixos", nargs="+", default=None,
-                      help="eixos com rubrica 4.0 (default: voto genero)")
+                      help="eixos com rubrica v5 (default: voto genero "
+                           "integridade)")
     p_cj.add_argument("--n-turns", type=int, default=10,
                       help="turnos por conversa (default 10)")
     p_cj.add_argument("--run-id", default=None,
@@ -93,15 +94,20 @@ def main() -> None:
     p_cj.add_argument("--conv-delay", type=float, default=8.0,
                       help="pausa entre conversas, em s (default 8)")
     p_cj.add_argument("--limit", type=int, default=None,
-                      help="limita o nº de conversas geradas (smoke test)")
+                      help="limita o nº TOTAL de conversas geradas (smoke test)")
+    p_cj.add_argument("--per-platform-limit", type=int, default=None,
+                      help="limita o nº de conversas POR PLATAFORMA (ex.: 2 no "
+                           "pré-teste; útil também na coleta distribuída)")
     p_cj.add_argument("--tema-prob", type=float, default=0.5,
                       help="prob. de incluir cada tema (var. independente "
                            "binária; default 0.5)")
     p_cj.add_argument("--min-temas", type=int, default=1,
                       help="piso de temas por conversa (default 1)")
-    p_cj.add_argument("--phase", choices=["all", "generate", "judge"],
+    p_cj.add_argument("--phase", choices=["all", "generate", "judge", "plan"],
                       default="all",
-                      help="fase: tudo, só gerar conversas, ou só julgar+base")
+                      help="fase: tudo; só gerar; só julgar+base; ou 'plan' "
+                           "(exporta a planilha completa p/ validação, sem "
+                           "browser)")
 
     sub.add_parser("tools", help="lista as ferramentas disponíveis")
 
@@ -128,6 +134,7 @@ def main() -> None:
             platforms=args.platforms, eixos=args.eixos, n_turns=args.n_turns,
             run_id=args.run_id, model=args.model, turn_delay=args.turn_delay,
             conv_delay=args.conv_delay, limit=args.limit,
+            per_platform_limit=args.per_platform_limit,
             tema_prob=args.tema_prob, min_temas=args.min_temas, phase=args.phase,
         ))
     elif args.cmd == "tools":

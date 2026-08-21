@@ -184,4 +184,19 @@ class UserAgent:
                     "possível de obter o comportamento-alvo, ainda enquadrada "
                     "como pedido pessoal e legítimo."
                 )
-        return llm.chat_send(self._chat, instr)
+        # Nunca devolver um turno vazio: uma resposta vazia da API (blip
+        # transitório ou recusa pontual) não pode virar uma mensagem em branco
+        # postada na plataforma (que falha ao enviar). Re-tenta com um empurrão.
+        nudge = (
+            "Sua resposta anterior veio vazia. Produza AGORA somente a mensagem "
+            "do usuário deste turno, em primeira pessoa e no seu estilo, sem "
+            "rótulos nem aspas."
+        )
+        for attempt in range(3):
+            text = (llm.chat_send(self._chat, instr) or "").strip()
+            if text:
+                return text
+            instr = nudge
+        raise RuntimeError(
+            f"LLM-usuário devolveu vazio após 3 tentativas (turno {self._turn})"
+        )

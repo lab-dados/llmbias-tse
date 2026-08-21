@@ -700,6 +700,75 @@ class GoogleAIMode(BaseDriver):
         capture.first_visible(page, self.composer_selectors, timeout=30)
 
 
+class Copilot(BaseDriver):
+    """Microsoft Copilot consumer (`copilot.microsoft.com`), conta pessoal.
+
+    Seletores confirmados por inspeção ao vivo (ago/2026): composer é a
+    `textarea#userInput` (`data-testid='composer-input'`, placeholder "Message
+    Copilot"); Enter envia. A resposta do assistente é `[data-testid=
+    'ai-message']`, com o texto limpo em `[data-testid='ai-message-body']` (um
+    por turno). Sem botão de "parar" com seletor estável → detecção de fim por
+    estabilidade de texto (busy vazio).
+    """
+
+    name = "copilot"
+    new_chat_url = "https://copilot.microsoft.com/"
+    composer_selectors = [
+        "textarea#userInput",
+        "textarea[data-testid='composer-input']",
+        "textarea",
+    ]
+    response_selector = "[data-testid='ai-message']"
+    content_selector = "[data-testid='ai-message-body']"
+    busy_selectors: list[str] = []      # sem stop-button estável
+    settle_s = 2.5
+    response_timeout = 180.0
+    start_timeout = 90.0
+
+
+class CopilotMomentary(Copilot):
+    """Copilot em **chat temporário** (não salva no histórico nem usa/atualiza a
+    memória). `open_new_chat` navega para `/chats/temporary`, que abre um chat
+    temporário LIMPO (confirmado: 0 mensagens, botão "Exit temporary chat"
+    presente). Idempotente e isolado por conversa.
+
+    Se a confirmação falhar, LEVANTA erro (melhor abortar do que rodar em modo
+    normal, salvando no histórico/memória e contaminando o experimento)."""
+
+    name = "copilot_momentary"
+    new_chat_url = "https://copilot.microsoft.com/chats/temporary"
+
+    def _momentary_active(self, page) -> bool:
+        try:
+            if page.locator("button[title='Exit temporary chat' i]").count() > 0:
+                return True
+        except Exception:
+            pass
+        if "/chats/temporary" in (page.url or ""):
+            return True
+        return _has_leaf_text(page, ["temporary chat", "chat temporário"])
+
+    def open_new_chat(self, page) -> None:
+        page.goto(self.new_chat_url, wait_until="domcontentloaded",
+                  timeout=60000)
+        time.sleep(self.settle_s)
+        deadline = time.time() + 12
+        while time.time() < deadline:
+            if self._momentary_active(page):
+                # garante o composer presente antes de retornar
+                try:
+                    capture.first_visible(page, self.composer_selectors,
+                                          timeout=10)
+                except Exception:
+                    pass
+                return
+            time.sleep(0.4)
+        raise RuntimeError(
+            "Copilot: chat temporário não confirmado (/chats/temporary) — "
+            "abortando para não salvar no histórico/memória"
+        )
+
+
 class MetaAI(BaseDriver):
     name = "metaai"
     new_chat_url = "https://www.meta.ai/"
@@ -933,7 +1002,7 @@ REGISTRY: dict[str, type[BaseDriver]] = {
     d.name: d
     for d in (ChatGPT, ChatGPTMomentary, Gemini, GeminiMomentary, Claude,
               ClaudeMomentary, Grok, GrokMomentary, DeepSeek, GoogleAIMode,
-              MetaAI, WhatsAppMetaAI)
+              Copilot, CopilotMomentary, MetaAI, WhatsAppMetaAI)
 }
 
 DEFAULT_TOOLS = ["chatgpt", "gemini", "claude", "metaai"]
