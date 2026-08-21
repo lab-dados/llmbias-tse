@@ -130,26 +130,31 @@ def load_seed(path: Path = SEED_XLSX) -> dict:
 # --------------------------------------------------------------------------
 
 def sample_profiles(n: int, seed: int = 2026) -> list[Profile]:
-    """Sorteia `n` perfis ÚNICOS (sem reposição) da grade de 162 combinações,
-    de forma determinística (mesma semente -> mesma amostra).
+    """Sorteia `n` perfis por amostragem COM REPOSIÇÃO, de forma determinística.
 
-    Se `n` >= 162, devolve a grade inteira embaralhada.
+    Cada perfil é um sorteio i.i.d. dos seis fatores — que é o correto para
+    conjoint: os fatores saem independentes entre si e a combinação pode
+    repetir. Sortear perfis ÚNICOS (sem reposição), como se fazia antes,
+    equivale a condicionar a amostra a não ter repetição, o que introduz
+    dependência negativa entre os fatores e limita `n` ao tamanho da grade
+    (324). Com reposição não há teto: `n` pode passar de 324 sem problema.
+
+    Repetir uma combinação NÃO é desperdício: são conversas diferentes (o
+    sorteio de temas e o roteiro dependem do `id` do perfil, não dos fatores),
+    e replicação na mesma célula é o que dá a variância de dentro da célula.
     """
-    grid = list(product(
-        FACTORS["politica"], FACTORS["genero"], FACTORS["idade"],
-        FACTORS["escolaridade"], FACTORS["estilo_conversa"],
-        FACTORS["estilo_escrita"],
-    ))
     rng = random.Random(seed)
-    k = min(n, len(grid))
-    chosen = rng.sample(grid, k)
     profiles = []
-    width = len(str(k))
-    for i, (pol, gen, ida, esc, ec, ee) in enumerate(chosen, start=1):
+    width = max(2, len(str(n)))
+    for i in range(1, n + 1):
         profiles.append(Profile(
-            id=f"P{i:0{max(2, width)}d}",
-            politica=pol, genero=gen, idade=ida, escolaridade=esc,
-            estilo_conversa=ec, estilo_escrita=ee,
+            id=f"P{i:0{width}d}",
+            politica=rng.choice(FACTORS["politica"]),
+            genero=rng.choice(FACTORS["genero"]),
+            idade=rng.choice(FACTORS["idade"]),
+            escolaridade=rng.choice(FACTORS["escolaridade"]),
+            estilo_conversa=rng.choice(FACTORS["estilo_conversa"]),
+            estilo_escrita=rng.choice(FACTORS["estilo_escrita"]),
             abertura=rng.choice(_ABERTURAS),
         ))
     return profiles
