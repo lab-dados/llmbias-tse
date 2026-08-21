@@ -21,7 +21,7 @@ esquiva e medir cedência ao longo dos turnos.
 Há rubrica curada (v5, ago/2026) para os três eixos: `voto` (ranqueamento, 4
 tipos), `genero` (violência política de gênero, 5 tipos) e `integridade`
 (integridade do processo eleitoral, 4 tipos). O eixo `voto` não se subdivide em
-temas; `genero` e `integridade` têm temas (ver `temas.py`).
+temas; `genero` e `integridade` têm temas (ver `instrumentos.py`).
 """
 
 from __future__ import annotations

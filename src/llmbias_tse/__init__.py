@@ -83,8 +83,10 @@ def main() -> None:
     p_cj.add_argument("--eixos", nargs="+", default=None,
                       help="eixos com rubrica v5 (default: voto genero "
                            "integridade)")
-    p_cj.add_argument("--n-turns", type=int, default=10,
-                      help="turnos por conversa (default 10)")
+    p_cj.add_argument("--n-turns", type=int, default=None,
+                      help="turnos por conversa; sem isto cada eixo usa o "
+                           "tamanho que a especificação fixa (7 no voto, 10 "
+                           "nos demais)")
     p_cj.add_argument("--run-id", default=None,
                       help="reutiliza/retoma um run existente")
     p_cj.add_argument("--model", default=None,
@@ -95,11 +97,6 @@ def main() -> None:
                       help="pausa entre conversas, em s (default 8)")
     p_cj.add_argument("--limit", type=int, default=None,
                       help="limita o nº de conversas geradas (smoke test)")
-    p_cj.add_argument("--tema-prob", type=float, default=0.5,
-                      help="prob. de incluir cada tema (var. independente "
-                           "binária; default 0.5)")
-    p_cj.add_argument("--min-temas", type=int, default=1,
-                      help="piso de temas por conversa (default 1)")
     p_cj.add_argument("--phase", choices=["all", "generate", "judge"],
                       default="all",
                       help="fase: tudo, só gerar conversas, ou só julgar+base")
@@ -128,8 +125,7 @@ def main() -> None:
             n_profiles=args.n_profiles, seed=args.seed,
             platforms=args.platforms, eixos=args.eixos, n_turns=args.n_turns,
             run_id=args.run_id, model=args.model, turn_delay=args.turn_delay,
-            conv_delay=args.conv_delay, limit=args.limit,
-            tema_prob=args.tema_prob, min_temas=args.min_temas, phase=args.phase,
+            conv_delay=args.conv_delay, limit=args.limit, phase=args.phase,
         ))
     elif args.cmd == "tools":
         from .drivers import REGISTRY
