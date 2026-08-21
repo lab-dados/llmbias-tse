@@ -178,8 +178,17 @@ def _format_prev(turns: list[dict], upto_idx: int) -> str:
 
 def annotate_turn(rubric: RubricGrid, conversa_anterior: str,
                   turno_usuario: str, resposta: str, *,
-                  model: str | None = None) -> Extracao:
+                  model: str | None = None, juiz=None) -> Extracao:
+    """Extrai os achados de UMA resposta.
+
+    `juiz` (um `judges.Juiz`) roda o MESMO prompt em outro provedor; sem ele,
+    cai no Gemini de sempre. O prompt é idêntico entre juízes de propósito: a
+    divergência tem de ser atribuível ao juiz, não ao estímulo.
+    """
     prompt = _build_prompt(rubric, conversa_anterior, turno_usuario, resposta)
+    if juiz is not None:
+        from . import judges
+        return judges.extrair(juiz, prompt, Extracao)
     return llm.generate_structured(prompt, Extracao, temperature=0.1,
                                    model=model)
 
@@ -189,7 +198,7 @@ def _achado_eh_violacao(voz: list[str]) -> bool:
 
 
 def annotate(conversation: dict, rubric: RubricGrid, *,
-             model: str | None = None) -> dict:
+             model: str | None = None, juiz=None) -> dict:
     """Anota uma conversa: extrai achados de cada resposta do assistente e
     agrega contagens descritivas (sem escore somado)."""
     turns = conversation.get("turns", [])
@@ -212,7 +221,8 @@ def annotate(conversation: dict, rubric: RubricGrid, *,
         conversa_anterior = _format_prev(turns, i)
         try:
             ext = annotate_turn(rubric, conversa_anterior,
-                                t.get("prompt", ""), resposta, model=model)
+                                t.get("prompt", ""), resposta, model=model,
+                                juiz=juiz)
         except Exception as e:  # noqa: BLE001
             por_turno.append({
                 "turn": t.get("turn"), "erro": repr(e),
@@ -259,4 +269,65 @@ def annotate(conversation: dict, rubric: RubricGrid, *,
         "por_voz": por_voz,
         "resistencia": resist_por_codigo,
         "turnos": por_turno,
+    }
+
+
+# --------------------------------------------------------------------------
+# Painel de juízes: o mesmo prompt em N modelos, guardando todos
+# --------------------------------------------------------------------------
+
+def annotate_panel(conversation: dict, rubric: RubricGrid, juizes,
+                   *, model: str | None = None) -> dict:
+    """Anota a conversa com CADA juiz do painel e guarda os três resultados.
+
+    Deliberadamente NÃO decide a regra de agregação (maioria, união, …): guarda
+    o que cada juiz viu e deixa a escolha para a análise, como já se faz com a
+    agregação da conjoint. O que já vem calculado é a CONCORDÂNCIA por tipo —
+    quantos juízes marcaram violação de cada tipo — que é o insumo tanto para
+    "maioria 2 de 3" quanto para medir a confiabilidade do instrumento.
+
+    A chave `por_tipo` do nível de cima é a da MAIORIA (≥ metade dos juízes que
+    responderam), para que o resto do pipeline (dataset, `violou_Tx`) continue
+    funcionando sem mudança.
+    """
+    por_juiz: dict[str, dict] = {}
+    for j in juizes:
+        try:
+            por_juiz[j.key] = annotate(conversation, rubric, model=model,
+                                       juiz=j)
+        except Exception as e:  # noqa: BLE001
+            print(f"[juizes] {j.key} falhou na conversa inteira: {e!r}")
+            por_juiz[j.key] = {"erro": repr(e)}
+
+    validos = {k: v for k, v in por_juiz.items() if "erro" not in v}
+    tipos = [t.codigo for t in rubric.tipos]
+    # nº de juízes que viram violação de cada tipo
+    votos = {c: sum(1 for v in validos.values()
+                    if (v.get("por_tipo") or {}).get(c, 0) > 0)
+             for c in tipos}
+    n = len(validos)
+    maioria = {c: (1 if (n and votos[c] * 2 >= n) else 0) for c in tipos}
+    # concordância simples: proporção de tipos em que todos os juízes
+    # concordaram (todos marcaram ou nenhum marcou).
+    unanimes = sum(1 for c in tipos if votos[c] in (0, n)) if n else 0
+
+    base = next(iter(validos.values()), {})
+    return {
+        "eixo": rubric.eixo,
+        "titulo": rubric.titulo,
+        "n_juizes": n,
+        "juizes": [j.key for j in juizes],
+        "votos_por_tipo": votos,
+        "por_tipo": maioria,
+        "concordancia_unanime_tipos": (unanimes / len(tipos)) if tipos else None,
+        # agregados descritivos do painel, do primeiro juiz válido (o dataset
+        # usa `por_tipo`, que é o da maioria)
+        "n_turnos_avaliados": base.get("n_turnos_avaliados"),
+        "achados_total": base.get("achados_total"),
+        "achados_violacao": base.get("achados_violacao"),
+        "turnos_com_violacao": base.get("turnos_com_violacao"),
+        "por_voz": base.get("por_voz"),
+        "resistencia": base.get("resistencia"),
+        "turnos": base.get("turnos"),
+        "por_juiz": por_juiz,
     }

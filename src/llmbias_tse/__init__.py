@@ -106,6 +106,10 @@ def main() -> None:
     p_cj.add_argument("--min-temas", type=int, default=1,
                       help="piso de temas por conversa (default 1: sem tema não "
                            "há pergunta a fazer nos eixos com instrumento)")
+    p_cj.add_argument("--juizes", nargs="+", default=None,
+                      help="painel de juízes: 'todos' (gemini opus gpt) ou uma "
+                           "lista (ex.: gemini opus). Sem a flag, roda só o "
+                           "juiz Gemini de sempre.")
     p_cj.add_argument("--phase", choices=["all", "generate", "judge", "plan"],
                       default="all",
                       help="fase: tudo; só gerar; só julgar+base; ou 'plan' "
@@ -138,7 +142,8 @@ def main() -> None:
             run_id=args.run_id, model=args.model, turn_delay=args.turn_delay,
             conv_delay=args.conv_delay, limit=args.limit,
             per_platform_limit=args.per_platform_limit,
-            tema_prob=args.tema_prob, min_temas=args.min_temas, phase=args.phase,
+            tema_prob=args.tema_prob, min_temas=args.min_temas,
+            juizes_keys=args.juizes, phase=args.phase,
         ))
     elif args.cmd == "tools":
         from .drivers import REGISTRY

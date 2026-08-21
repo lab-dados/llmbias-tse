@@ -38,7 +38,7 @@ from . import browser, capture, llm
 from .axes import EIXOS
 from .conjoint import Profile, load_seed, persona_presentation, sample_profiles
 from .drivers import REGISTRY
-from .judge import annotate
+from .judge import annotate, annotate_panel
 from .rubrics import RUBRICS, RubricGrid, get_rubric
 from .storage import RunStore, _now_iso
 from . import instrument
@@ -533,7 +533,7 @@ def export_plano_completo(store: RunStore, profiles, platforms, eixos,
 # --------------------------------------------------------------------------
 
 def judge_conversations(store: RunStore, rubrics: dict[str, RubricGrid],
-                        model) -> None:
+                        model, juizes=None) -> None:
     conv_dir = store.dir / "conversations"
     anot_dir = store.dir / "annotations"
     anot_dir.mkdir(parents=True, exist_ok=True)
@@ -552,15 +552,23 @@ def judge_conversations(store: RunStore, rubrics: dict[str, RubricGrid],
             continue
         rubric = rubrics[rec["eixo"]]
         try:
-            anot = annotate(rec, rubric, model=model)
+            if juizes:
+                anot = annotate_panel(rec, rubric, juizes, model=model)
+            else:
+                anot = annotate(rec, rubric, model=model)
         except Exception as e:
             print(f"[conjoint] ERRO ao julgar {conv_id}: {e!r}")
             continue
         anot["conversation_id"] = conv_id
         _save_json(out_path, anot)
-        print(f"[conjoint] {conv_id}: {anot['achados_violacao']} achados de "
-              f"violação em {anot['turnos_com_violacao']}/"
-              f"{anot['n_turnos_avaliados']} turnos")
+        if juizes:
+            print(f"[conjoint] {conv_id}: {anot['n_juizes']} juízes | "
+                  f"votos por tipo {anot['votos_por_tipo']} | "
+                  f"unanimidade {anot['concordancia_unanime_tipos']:.0%}")
+        else:
+            print(f"[conjoint] {conv_id}: {anot['achados_violacao']} achados de "
+                  f"violação em {anot['turnos_com_violacao']}/"
+                  f"{anot['n_turnos_avaliados']} turnos")
 
 
 # --------------------------------------------------------------------------
@@ -672,10 +680,19 @@ def run(n_profiles: int = 3, seed: int = 2026,
         conv_delay: float = 8.0, limit: int | None = None,
         per_platform_limit: int | None = None,
         tema_prob: float = DEFAULT_TEMA_PROB, min_temas: int = DEFAULT_MIN_TEMAS,
+        juizes_keys: list[str] | None = None,
         phase: str = "all") -> int:
     platforms = platforms or list(DEFAULT_PLATFORMS)
     eixos = eixos or list(DEFAULT_EIXOS)
     model = model or llm.DEFAULT_MODEL
+    # Painel de juízes: vazio = juiz único (Gemini de sempre).
+    juizes = []
+    if juizes_keys:
+        from . import judges as _judges
+        keys = None if juizes_keys == ["todos"] else juizes_keys
+        juizes = _judges.painel(keys)
+        print(f"[conjoint] painel de juízes: "
+              f"{[(j.key, j.model) for j in juizes]}")
 
     unknown_pl = [p for p in platforms if p not in PLATFORM_DRIVERS]
     if unknown_pl:
@@ -716,7 +733,7 @@ def run(n_profiles: int = 3, seed: int = 2026,
                                plan_roteiros, limit=limit,
                                per_platform_limit=per_platform_limit)
     if phase in ("all", "judge"):
-        judge_conversations(store, rubrics, model)
+        judge_conversations(store, rubrics, model, juizes=juizes)
         build_dataset(store, rubrics)
 
     print(f"\n[conjoint] Concluído. Dados em: {store.dir}")
