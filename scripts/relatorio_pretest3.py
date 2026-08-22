@@ -241,7 +241,7 @@ def tab_por_tipo(nivel):
         blocos.append(f"""
 <h4>{e}</h4>
 <table>
- <tr><th>tipo</th><th>rótulo</th><th>n</th><th>unânime</th><th>Fleiss κ</th>
+ <tr><th>tipo</th><th>rótulo</th><th>células</th><th>unânime</th><th>Fleiss κ</th>
      <th>gpt</th><th>gemini</th><th>opus</th></tr>
  {"".join(linhas)}
 </table>""")
@@ -343,7 +343,7 @@ de discordar da localização.</p>
 
 <h3>Nível conversa × tipo (n={CONV['n']})</h3>
 <table>
-<tr><th>par</th><th>n</th><th>concordância</th><th>κ de Cohen</th>
+<tr><th>par</th><th>células</th><th>concordância</th><th>κ de Cohen</th>
     <th>taxa de cada um</th></tr>
 {tab_pares(CONV)}
 </table>
@@ -353,7 +353,7 @@ de discordar da localização.</p>
 
 <h3>Nível turno × tipo (n={TURNO['n']})</h3>
 <table>
-<tr><th>par</th><th>n</th><th>concordância</th><th>κ de Cohen</th>
+<tr><th>par</th><th>células</th><th>concordância</th><th>κ de Cohen</th>
     <th>taxa de cada um</th></tr>
 {tab_pares(TURNO)}
 </table>
@@ -394,6 +394,13 @@ A maioria de 2 em 3 cai em {pct(CONV['agregacoes']['maioria'])}, praticamente
 colada na taxa do Gemini, que é o juiz mediano.</p>
 
 <h2>4. Taxa de violação por plataforma e eixo, segundo cada juiz</h2>
+<p><b>Atenção à unidade.</b> Este pré-teste rodou <b>UMA conversa</b> por
+plataforma × eixo (24 conversas, todas do mesmo perfil <code>P01</code>). O que
+a coluna <i>células</i> conta não são conversas: é <b>conversa × tipo</b> — uma
+conversa de gênero rende 5 células (T1..T5) e uma de voto ou integridade rende
+4. No nível de turno, cada célula é turno × tipo. As taxas abaixo são, portanto,
+a fração de <i>células</i> marcadas, e um único comportamento pode mover a taxa
+em 20 ou 25 pontos.</p>
 <p>Esta é a tabela que mais importa para o relatório final: a unidade em que o
 texto vai falar ("no eixo de voto, a plataforma X…"). Mostra a taxa que
 <b>cada juiz sozinho</b> atribuiria àquela plataforma naquele eixo, ao lado da
@@ -402,13 +409,13 @@ mais severo — é a medida de quanto o resultado depende de quem julga.</p>
 <div class="tabela-scroll">
 <h4>nível conversa × tipo</h4>
 <table>
-<tr><th>plataforma</th><th>eixo</th><th>n</th><th>gpt</th><th>gemini</th>
+<tr><th>plataforma</th><th>eixo</th><th>células</th><th>gpt</th><th>gemini</th>
     <th>opus</th><th>maioria</th><th>amplitude</th><th>unânime</th></tr>
 {tab_plat_eixo_juiz('nivel_conversa')}
 </table>
 <h4>nível turno × tipo</h4>
 <table>
-<tr><th>plataforma</th><th>eixo</th><th>n</th><th>gpt</th><th>gemini</th>
+<tr><th>plataforma</th><th>eixo</th><th>células</th><th>gpt</th><th>gemini</th>
     <th>opus</th><th>maioria</th><th>amplitude</th><th>unânime</th></tr>
 {tab_plat_eixo_juiz('nivel_turno')}
 </table>
@@ -433,13 +440,13 @@ seção 7 recomenda publicar a dispersão, não só a maioria.</p>
 <div class="tabela-scroll">
 <h4>nível conversa</h4>
 <table>
-<tr><th>eixo</th><th>n</th><th>unânime</th><th>Fleiss κ</th>
+<tr><th>eixo</th><th>células</th><th>unânime</th><th>Fleiss κ</th>
     <th>gpt</th><th>gemini</th><th>opus</th></tr>
 {tab_por_eixo('nivel_conversa')}
 </table>
 <h4>nível turno</h4>
 <table>
-<tr><th>eixo</th><th>n</th><th>unânime</th><th>Fleiss κ</th>
+<tr><th>eixo</th><th>células</th><th>unânime</th><th>Fleiss κ</th>
     <th>gpt</th><th>gemini</th><th>opus</th></tr>
 {tab_por_eixo('nivel_turno')}
 </table>
