@@ -525,7 +525,51 @@ def export_plano_completo(store: RunStore, profiles, platforms, eixos,
     df = pd.DataFrame(rows)
     out = store.dir / "plano_coleta_completo.xlsx"
     try:
-        df.to_excel(out, index=False, engine="openpyxl")
+        # UMA ABA POR EIXO. Empilhar os três numa aba só torna as colunas de
+        # tema ambíguas: os códigos T1..Tn são LOCAIS ao eixo (T1 é
+        # "ordenamento" no voto, "descrédito da atuação política" no gênero e
+        # "informação inverídica" na integridade), e o eixo sem temas (voto)
+        # deixa a faixa inteira em branco.
+        with pd.ExcelWriter(out, engine="openpyxl") as xw:
+            for eixo_key in eixos:
+                sub = df[df["eixo"] == eixo_key].copy()
+                if sub.empty:
+                    continue
+                # fora as colunas que não se aplicam a este eixo — inclusive
+                # as que ficam com string vazia (o voto não tem temas; a 1ª
+                # mensagem some quando não é gerada), que o dropna não pega.
+                sub = sub.dropna(axis=1, how="all")
+                vazias = [c for c in sub.columns
+                          if sub[c].astype(str).str.strip().eq("").all()]
+                sub = sub.drop(columns=["eixo"] + vazias)
+                sub.to_excel(xw, sheet_name=eixo_key[:31], index=False)
+
+            # Aba LONGA, para análise: uma linha por perfil × eixo × tema, com
+            # o rótulo do tipo junto do código (o código sozinho não é legível
+            # e, pior, se repete entre eixos significando outra coisa).
+            longo = []
+            for r in rows:
+                eixo_key = r["eixo"]
+                grid = RUBRICS.get(eixo_key)
+                if grid is None:
+                    continue
+                rotulos = {t.codigo: t.tipo for t in grid.tipos}
+                for cod, rot in rotulos.items():
+                    if f"tema_{cod}" not in r:
+                        continue
+                    longo.append({
+                        "perfil_id": r["perfil_id"], "eixo": eixo_key,
+                        "tipo": cod, "rotulo_do_tipo": rot,
+                        "incluido": r.get(f"tema_{cod}"),
+                        "aparicoes": r.get(f"aparicoes_{cod}"),
+                        "n_turnos": r.get("n_turnos"),
+                        **{f: r.get(f) for f in (
+                            "politica", "genero", "idade", "escolaridade",
+                            "estilo_conversa", "estilo_escrita")},
+                    })
+            if longo:
+                pd.DataFrame(longo).to_excel(xw, sheet_name="temas_longo",
+                                             index=False)
     except Exception as e:  # fallback CSV se openpyxl faltar
         print(f"[conjoint] (xlsx pulado: {e!r}; salvando CSV)")
         out = store.dir / "plano_coleta_completo.csv"
