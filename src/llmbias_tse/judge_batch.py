@@ -115,6 +115,32 @@ def _schema() -> dict:
     return _estritar(judge.Extracao.model_json_schema())
 
 
+def _validar(cid: str, txt: str, juiz_key: str) -> judge.Extracao | None:
+    """Valida o JSON de um item do lote. NUNCA falha em silêncio.
+
+    Alguns provedores devolvem `null` dentro das listas quando não há achado
+    (visto no Gemini: `{"achados": [null]}`), o que não valida contra o schema.
+    Limpamos os nulos antes de validar; qualquer outra falha é REPORTADA, e não
+    engolida — um item perdido em silêncio vira uma anotação a menos sem que
+    ninguém perceba.
+    """
+    try:
+        bruto = json.loads(txt)
+    except Exception as e:  # noqa: BLE001
+        print(f"[lote:{juiz_key}] {cid}: JSON inválido ({e})")
+        return None
+    if isinstance(bruto, dict):
+        for chave in ("achados", "resistencia"):
+            v = bruto.get(chave)
+            if isinstance(v, list):
+                bruto[chave] = [x for x in v if x is not None]
+    try:
+        return judge.Extracao.model_validate(bruto)
+    except Exception as e:  # noqa: BLE001
+        print(f"[lote:{juiz_key}] {cid}: não valida contra o schema ({e})")
+        return None
+
+
 # --------------------------------------------------------------------------
 # Submissão
 # --------------------------------------------------------------------------
@@ -124,10 +150,40 @@ def submeter(juiz: Juiz, itens: list[ItemLote]) -> str:
         return _submeter_anthropic(juiz, itens)
     if juiz.provider == "openai":
         return _submeter_openai(juiz, itens)
+    if juiz.provider == "google":
+        return _submeter_google(juiz, itens)
     raise NotImplementedError(
         f"lote ainda não implementado para {juiz.provider!r} "
         f"(use o modo síncrono para esse juiz)"
     )
+
+
+def _submeter_google(juiz: Juiz, itens: list[ItemLote]) -> str:
+    from google.genai import types as T
+
+    from . import llm
+
+    client = llm.get_client()
+    reqs = [
+        {
+            "contents": [{"role": "user", "parts": [{"text": it.prompt}]}],
+            # o custom_id volta em `inlined_responses[].metadata`
+            "metadata": {"custom_id": it.custom_id},
+            # MESMA configuração do modo síncrono (`llm.generate_structured`):
+            # o schema vai como o modelo Pydantic, não como JSON Schema cru —
+            # com o schema cru o Gemini devolveu `{"achados":[null]}` e saídas
+            # truncadas em 120k chars. `max_output_tokens` limita a fuga.
+            "config": T.GenerateContentConfig(
+                temperature=0.1,
+                response_mime_type="application/json",
+                response_schema=judge.Extracao,
+                max_output_tokens=8192,
+            ),
+        }
+        for it in itens
+    ]
+    job = client.batches.create(model=juiz.model, src=reqs)
+    return job.name
 
 
 def _submeter_anthropic(juiz: Juiz, itens: list[ItemLote]) -> str:
@@ -204,6 +260,15 @@ def estado(juiz: Juiz, lote_id: str) -> str:
         if b.status in ("failed", "expired", "cancelled"):
             return "erro"
         return "em_andamento"
+    if juiz.provider == "google":
+        from . import llm
+        j = llm.get_client().batches.get(name=lote_id)
+        st = str(getattr(j, "state", ""))
+        if "SUCCEEDED" in st or "PARTIALLY" in st:
+            return "pronto"
+        if any(x in st for x in ("FAILED", "CANCELLED", "EXPIRED")):
+            return "erro"
+        return "em_andamento"
     raise NotImplementedError(juiz.provider)
 
 
@@ -222,10 +287,9 @@ def coletar(juiz: Juiz, lote_id: str) -> dict[str, judge.Extracao]:
                 txt = getattr(bloco, "text", None)
                 if not txt:
                     continue
-                try:
-                    out[r.custom_id] = judge.Extracao.model_validate_json(txt)
-                except Exception:  # noqa: BLE001
-                    pass
+                ext = _validar(r.custom_id, txt, juiz.key)
+                if ext is not None:
+                    out[r.custom_id] = ext
                 break
         return out
     if juiz.provider == "openai":
@@ -242,10 +306,26 @@ def coletar(juiz: Juiz, lote_id: str) -> dict[str, judge.Extracao]:
             corpo = (d.get("response") or {}).get("body") or {}
             txt = _texto_openai(corpo)
             if cid and txt:
-                try:
-                    out[cid] = judge.Extracao.model_validate_json(txt)
-                except Exception:  # noqa: BLE001
-                    pass
+                ext = _validar(cid, txt, juiz.key)
+                if ext is not None:
+                    out[cid] = ext
+        return out
+    if juiz.provider == "google":
+        from . import llm
+        j = llm.get_client().batches.get(name=lote_id)
+        dest = getattr(j, "dest", None)
+        for r in (getattr(dest, "inlined_responses", None) or []):
+            meta = getattr(r, "metadata", None) or {}
+            cid = meta.get("custom_id") if isinstance(meta, dict) else None
+            resp = getattr(r, "response", None)
+            if not cid or resp is None or getattr(r, "error", None):
+                continue
+            txt = getattr(resp, "text", None)
+            if not txt:
+                continue
+            ext = _validar(cid, txt, juiz.key)
+            if ext is not None:
+                out[cid] = ext
         return out
     raise NotImplementedError(juiz.provider)
 
